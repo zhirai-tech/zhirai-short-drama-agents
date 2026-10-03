@@ -9,7 +9,7 @@
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
-  "files": ["index.js", "agents", "locale", "cordis.patch.yml"],
+  "files": ["index.js", "agents", "locale", "cordis.patch.yml", "icon.svg"],
   "icon": "./icon.svg",
   "meta": {
     "title": "ZHIRAI Short-Drama Agent Crew",
