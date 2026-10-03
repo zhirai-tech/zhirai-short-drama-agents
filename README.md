@@ -98,14 +98,13 @@ pnpm --dir "$env:DSH_PROFILE_DIR" add "link:<本目录绝对路径>"
 
 注意：任务必须经 **stdin** 传入（位置参数在 Electron Node 模式下会被启动链吃掉）。
 
-### 关于 persona 的两个入口（重要）
+### 关于 persona 的入口（重要）
 
 | surface | persona 入口 | 为什么 |
 |---|---|---|
 | Web 等挂载了 preset 系统的 surface | `cordis.patch.yml` 内的 6 个 `agent-preset` 声明 + `agent-preset-registry.default = zhirai-director` | 官方 preset 机制 |
-| 只挂 `system-prompt` 的 surface（如 `dsh-headless`） | patch 顶层的 `id: system-prompt` 定向 config 覆盖 | 实测 `dsh-base` **未**挂载 preset 系统（dump 内无 registry 行），preset 不会被消费 |
 
-两个入口的 persona 内容**逐字相同**（同一份源系统 Director prompt），因此不存在第二套 Agent 定义。
+插件**不再**做顶层的 `id: system-prompt` 覆盖：那会把整个 Harness（含默认会话）的 persona 换成 Director prompt，污染所有非 ZHIRAI 会话。现在 6 个 Agent 的身份**只**由各自的 preset 提供 —— 会话选中某个 preset 时，preset 作用域内的 `@deepseek-ai/dsh-persona` 会遮蔽部署 persona，可见性范围正好限制在 ZHIRAI 会话内。
 
 ## 六、模型如何选择（任务书 §八/§九）
 

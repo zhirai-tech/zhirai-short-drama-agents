@@ -16,6 +16,29 @@ import { ZHIRAI_AGENTS, ZHIRAI_TOPOLOGY, LANGUAGE_DIRECTIVE } from '../agents/de
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 
+/** 本插件在 profile 里的安装名（profile package.json 的 dependencies key） */
+const PACKAGE_NAME = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).name;
+
+/**
+ * DSH Cordis Loader 的 `!!js` 求值器是 `new Function('ctx','expr','with (ctx) { return eval(expr) }')`，
+ * 因此表达式里**没有模块作用域**：`import.meta` / `__dirname` / `require` 都不可用
+ * （实测 `import.meta.url` → "Cannot use 'import.meta' outside a module"）。
+ *
+ * 可用的东西：
+ *   - 行作用域上的 `baseUrl`：该 profile 根目录的 file URL
+ *     （`dsh-app-boot` 的 `boot()` 设置 ctx.baseUrl = dirname(configPath) 的 URL；Loader 把它继承给每个 entry）
+ *   - Node 全局 `process`（含 `process.getBuiltinModule`）
+ *
+ * 于是用 profile 根目录作为 require 锚点解析本插件自己的 package.json，
+ * 再取其目录 + `agents/<presetId>` —— 与安装方式是 link / 目录 / 真实目录无关。
+ */
+const skillDirExpr = (presetId) =>
+  "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(" +
+  "process.getBuiltinModule('node:module').createRequire(" +
+  "process.getBuiltinModule('node:url').fileURLToPath(new URL('package.json', baseUrl))" +
+  `).resolve(${JSON.stringify(`${PACKAGE_NAME}/package.json`)}))` +
+  `, 'agents', ${JSON.stringify(presetId)})`;
+
 /** 源系统 prompt 用 `{language}` 占位符；DSH 侧展开为语言指令 */
 const expandLanguage = (prompt) => String(prompt).split('{language}').join(LANGUAGE_DIRECTIVE);
 
@@ -157,7 +180,7 @@ fs.writeFileSync(path.join(localeDir, 'en.json'), JSON.stringify(en, null, 2) + 
 console.log('✓ locale/{zh,en}.json');
 
 // ── 4. cordis.patch.yml（preset 声明 + Host 插件行） ──
-/** YAML 里 persona.prefix 用块标量，避免提示词里的引号/冒号破坏 YAML */
+/** YAML 里提示词用块标量，避免提示词里的引号/冒号破坏 YAML */
 const blockScalar = (text, indent) => {
   const pad = ' '.repeat(indent);
   return '|-\n' + text.split('\n').map((l) => (l.length ? pad + l : '')).join('\n');
@@ -211,9 +234,10 @@ for (const a of agents) {
   yml += "            name: '@deepseek-ai/dsh-skill-filesystem'\n";
   yml += '            config:\n';
   yml += '              includeDefaultRoots: true\n';
-  yml += `              # !!js 由 DSH Cordis Loader 在行激活时求值；工具调用时 cwd = 本插件目录（node_modules/<pkg>）\n`;
+  yml += `              # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；\n`;
+  yml += `              # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。\n`;
   yml += `              customSkillDirs:\n`;
-  yml += `                - !!js new URL('./agents/${a.presetId}', import.meta.url).pathname\n`;
+  yml += `                - !!js ${skillDirExpr(a.presetId)}\n`;
   if (a.role === 'DIRECTOR') {
     yml += '          # 结构化提问：让用户做选择（源系统 ask_user_choice 的 DSH 等价机制）\n';
     yml += '          - id: ask-user\n';
@@ -226,24 +250,18 @@ for (const a of agents) {
       yml += '            config:\n';
       yml += '              provider: spawn\n';
       yml += `              toolName: ${e.tool}\n`;
-      yml += '              persona:\n';
-      yml += '                prefix: ' + blockScalar(target.prompt, 18) + '\n';
+      yml += '              # persona 在该 schema 里是 string（不是 {prefix}）：源系统 prompt 原文整段作字符串传入。\n';
+      yml += '              persona: ' + blockScalar(target.prompt, 16) + '\n';
     }
   }
   yml += '\n';
 }
 
-// ── 顶层：id 定向 config 覆盖 ──
-// `dsh-base` 未挂载 preset 系统（实测 dump 内无 agent-preset-registry 行），所以只有 system-prompt 的
-// surface（headless）不会走 preset。用官方支持的 id 定向覆盖把同一个 Agent 的 persona 装进去，
-// 内容与 preset 的 persona **完全相同**（源系统 Director prompt 原文）—— 不是第二套 Agent。
-yml += '# ── 顶层 id 定向 config 覆盖：让只挂 system-prompt 的 surface（如 headless）也使用本插件的 Director Agent ──\n';
-yml += '# 覆盖是官方支持的 patch 形态；persona 内容与下面 preset 里的 persona 逐字相同（同一份源系统 prompt）。\n';
-yml += '- id: system-prompt\n';
-yml += "  name: '@deepseek-ai/dsh-system-prompt'\n";
-yml += '  config:\n';
-yml += '    personaSuffix: Your working directory is {{cwd}}.\n';
-yml += '    personaPrefix: ' + blockScalar(agents[0].prompt, 6) + '\n';
+// ── 顶层：**不生成任何全局覆盖** ──
+// 曾经这里有一条 `- id: system-prompt` 的 id 定向覆盖，把整个 Harness（含默认会话）的 persona 换成
+// Director prompt。那会污染所有非 ZHIRAI 会话，已删除。
+// 现在 6 个 Agent 的身份**只**由各自的 `@deepseek-ai/dsh-agent-preset` → `@deepseek-ai/dsh-persona` 提供：
+// 会话选中某个 preset 时，preset 作用域里的 persona 会遮蔽部署 persona（正是本插件需要的可见性范围）。
 
 fs.writeFileSync(path.join(root, 'cordis.patch.yml'), yml, 'utf8');
 const lines = yml.split('\n').length;

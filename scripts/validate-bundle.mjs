@@ -94,14 +94,21 @@ for (const r of presetRows) {
     } else if (p.name === SKILL_FS) {
       check(Array.isArray(pc.customSkillDirs), `${tag}/skill-filesystem: customSkillDirs 是数组`);
       for (const d of pc.customSkillDirs || []) {
-        // `!!js` 表达式被解析成 {__jsExpression}；两种形态都接受，但必须指向本包 agents/
+        // `!!js` 表达式被解析成 {__jsExpression}；两种形态都接受，但必须指向本包 agents/<presetId>
         const text = typeof d === 'string' ? d : String(d?.__jsExpression || '');
-        check(text.includes('/agents/'), `${tag}/skill-filesystem: 技能目录指向本包 agents/（${text.slice(0, 60)}）`);
+        check(text.includes("'agents'") && text.includes(c.id), `${tag}/skill-filesystem: 技能目录解析到本包 agents/${c.id}`);
+        // Loader 的 !!js 求值器是 `new Function(...)`，没有模块作用域 —— import.meta 会直接抛
+        // "Cannot use 'import.meta' outside a module"，把整个 preset 打成 broken。
+        check(!text.includes('import.meta'), `${tag}/skill-filesystem: 表达式未使用 import.meta（Loader 求值无模块作用域）`);
       }
     } else if (p.name === TOOL_SUBAGENT) {
       check(typeof pc.provider === 'string' && pc.provider.length > 0, `${tag}/tool-subagent: provider 非空 = ${pc.provider}`);
       check(typeof pc.toolName === 'string' && /^[a-z_][a-z0-9_]*$/.test(pc.toolName || ''), `${tag}/tool-subagent: toolName 合法 = ${pc.toolName}`);
-      check(!!pc.persona && typeof pc.persona.prefix === 'string' && pc.persona.prefix.length > 0, `${tag}/tool-subagent: persona.prefix 非空（${String(pc.persona?.prefix || '').length} 字）`);
+      // 当前 @deepseek-ai/dsh-tool-subagent 的 Config 里 `persona: z.string()`；
+      // 传对象（旧写法 {prefix: …}）会得到
+      // "invalid config: $.persona expected string but got [object Object] (at persona)"
+      // 并让整个 preset 变成 agent-preset/invalid。
+      check(typeof pc.persona === 'string' && pc.persona.trim().length > 0, `${tag}/tool-subagent: persona 是字符串（${typeof pc.persona}，${String(pc.persona || '').length} 字）`);
     }
   }
   presets.push(c);
@@ -115,6 +122,13 @@ const modelLeak =
   /(?:^|\n)\s*provider:\s*(?!spawn\b)\S+/.exec(rawPatch) ||
   /\b(?:doubao|gpt-4|gpt-3|claude-3|ltx|seedance|vidu)\b/i.exec(rawPatch);
 check(!modelLeak, `patch 未硬编码任何模型/供应商${modelLeak ? `（发现：${JSON.stringify(modelLeak[0].trim())}）` : ''}`);
+
+// `!!js` 表达式里不得出现 import.meta（Loader 用 new Function 求值，没有模块作用域）。
+const badImportMeta = rawPatch
+  .split(/\r?\n/)
+  .filter((line) => !line.trimStart().startsWith('#'))
+  .find((line) => line.includes('import.meta'));
+check(!badImportMeta, `patch 的可执行行未使用 import.meta${badImportMeta ? `（发现：${badImportMeta.trim().slice(0, 80)}）` : ''}`);
 
 // Director 必须挂 ask_user + 5 个派活工具；执行角色不得挂派活工具
 const dir = presets.find((p) => p.id === 'zhirai-director');
