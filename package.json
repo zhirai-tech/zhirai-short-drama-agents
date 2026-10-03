@@ -1,0 +1,19 @@
+{
+  "name": "@local/zhirai-short-drama-agents",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ZHIRAI AI short-drama agent architecture as a DeepSeek Harness plugin bundle",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": ["index.js", "agents", "locale", "cordis.patch.yml"],
+  "icon": "./icon.svg",
+  "meta": {
+    "title": "ZHIRAI Short-Drama Agent Crew",
+    "description": "The complete ZHIRAI short-drama agent architecture (Director + 5 specialist agents) as selectable Harness agents."
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}
