@@ -18,6 +18,37 @@
 export const LANGUAGE_DIRECTIVE = 'Reply in the language the user writes in.';
 
 /**
+ * ── 临时文字创作测试约束（TEMPORARY · 非源系统 prompt 的一部分） ──
+ *
+ * 用途：当前阶段只联调「文字创作 / 剧本创作 / 项目文件整理」这条链，
+ * 而总导演的四条非 WRITER 派活边已被暂时暂停（见 ZHIRAI_TOPOLOGY.dispatchEdges）。
+ * 这里给的是一段**显式、可整段删除**的运行时约束，让总导演在工具缺失时表现得可预期。
+ *
+ * 纪律：
+ *   1. 这段文字**不写回源系统 prompt**，只在生成 bundle 时追加到 DIRECTOR 的 persona 之后；
+ *   2. 与源 prompt 原文用醒目的分隔标记隔开，恢复时整段删掉即可；
+ *   3. 只陈述「当前可做什么 / 不可做什么 / 不许伪造」，不改变源系统的创作流程与阶段口径。
+ *
+ * 恢复方式：删除本常量 + build-bundle.mjs 里引用它的那一处（`DIRECTOR_TEST_MODE` 分支）。
+ */
+export const ZHIRAI_DIRECTOR_TEST_MODE = [
+  '',
+  '',
+  '---',
+  '',
+  '## 【临时测试模式】当前阶段只做文字创作（本段为临时约束，非系统原设定）',
+  '',
+  '当前处于**文字创作联调阶段**：只测试「用户 → Harness 主 Agent → 你（总导演）→ 编剧 → 项目文件」这条链路。在这个阶段里：',
+  '',
+  '- **只执行**文字创作、剧本创作与项目文件整理：故事大纲、完整故事、分集卡、剧本、对白、旁白、分镜文字稿、角色与场景的文字设定。',
+  '- **不要主动规划或承诺**图片生成、视频生成、配音、音乐、剪辑这类生产环节；不要在正文里排这些工序的排期。',
+  '- 当前**只有派给编剧（WRITER）的通道**可用。**不要尝试调用**已经暂时停用的画师 / 配音师 / 音乐师 / 剪辑师派活通道 —— 它们此刻不在你的工具清单里，调用只会失败。',
+  '- 如果用户的需求涉及图片、视频、配音、音乐或剪辑：**先把这一轮能做的文字/剧本部分完整做完**（例如先把该集剧本与分镜文字写完），然后**如实说明**这些视觉/音频环节属于暂停中的能力、当前阶段暂不执行。',
+  '- **绝不伪造产出**：不要声称已经生成或已派出图片、视频、音频、成片，也不要用文字假装某个媒体文件已经存在于项目里。没有做就说没做。',
+  '- 不要因为缺少这些工具就停下整条链：文字部分的交付要完整、可直接归档进项目文件。',
+].join('\n');
+
+/**
  * 6 个系统 Agent —— 与源系统 `DEFAULT_SYSTEM_AGENTS` 一一对应，顺序一致。
  * `prompt` 为源系统运行版本原文（已把 `{language}` 展开为 LANGUAGE_DIRECTIVE）。
  * `tools` 为源系统 Agent.tools 原样（空数组 = 该 Agent 在源系统中不启用任何工具）。
@@ -28,7 +59,13 @@ export const ZHIRAI_AGENTS = [
     presetId: 'zhirai-director',
     /** 源系统 AgentRole 枚举值 —— 保持原样，作为跨系统的稳定标识 */
     role: 'DIRECTOR',
-    name: '主创作助手',
+    /**
+     * Harness 侧对外显示名（preset config.name）。
+     * 源系统里这个 Agent 叫「主创作助手」，但在 Harness 里它是**被官方 Main Agent 调用的子 Agent**，
+     * 不是 Main Agent 本身；显示名因此改为「ZHIRAI 创作总导演」，避免与 Harness 主 Agent 身份混淆。
+     * 源系统原名不受影响（见 _extracted-agents.json 与 agents/prompts.json 的 sourcePrompt 溯源）。
+     */
+    name: 'ZHIRAI 创作总导演',
     genre: '综合',
     description: '总调度，可调用所有智能体',
     /** 源系统 Agent.tools 原样 */
@@ -136,13 +173,26 @@ export const ZHIRAI_AGENTS = [
 export const ZHIRAI_TOPOLOGY = {
   /** 总控：唯一具备工具调用循环、唯一可派活 */
   root: 'DIRECTOR',
-  /** 调度边：Director → 执行角色 */
+  /**
+   * 调度边：Director → 执行角色。
+   *
+   * `dispatchEnabled` 是**临时暂停开关**（不是删除开关，更不是废弃标记）：
+   *   - `true`（默认，缺省即启用）：该派活工具挂载到 Director 的 preset 上，Director 可调用。
+   *   - `false`：该派活工具**仍然声明**在 preset 里、仍然完整生成，只额外带 `disabled: true`，
+   *     因此不进入 Director 可调用的工具集合 —— 目标角色 Agent 本身、其 persona/prompt、
+   *     其工具配置与生成文件全部保持完整。
+   *
+   * 暂停的只是「总导演此刻能不能调用它」，不是「这个 Agent 是否存在」。
+   * 恢复方式：把对应边的 `dispatchEnabled` 改回 `true`（或删掉该键）并重跑 build-bundle.mjs。
+   *
+   * 当前阶段（文字创作联调）只放行 WRITER，其余四边暂停 —— 见 ZHIRAI_DIRECTOR_TEST_MODE。
+   */
   dispatchEdges: [
-    { from: 'DIRECTOR', to: 'WRITER', via: 'dispatch_agent', tool: 'w_dispatch' },
-    { from: 'DIRECTOR', to: 'ARTIST', via: 'dispatch_agent', tool: 'a_dispatch' },
-    { from: 'DIRECTOR', to: 'VOICE_ACTOR', via: 'dispatch_agent', tool: 'v_dispatch' },
-    { from: 'DIRECTOR', to: 'MUSIC_COMPOSER', via: 'dispatch_agent', tool: 'm_dispatch' },
-    { from: 'DIRECTOR', to: 'EDITOR', via: 'dispatch_agent', tool: 'e_dispatch' },
+    { from: 'DIRECTOR', to: 'WRITER', via: 'dispatch_agent', tool: 'w_dispatch', dispatchEnabled: true },
+    { from: 'DIRECTOR', to: 'ARTIST', via: 'dispatch_agent', tool: 'a_dispatch', dispatchEnabled: false },
+    { from: 'DIRECTOR', to: 'VOICE_ACTOR', via: 'dispatch_agent', tool: 'v_dispatch', dispatchEnabled: false },
+    { from: 'DIRECTOR', to: 'MUSIC_COMPOSER', via: 'dispatch_agent', tool: 'm_dispatch', dispatchEnabled: false },
+    { from: 'DIRECTOR', to: 'EDITOR', via: 'dispatch_agent', tool: 'e_dispatch', dispatchEnabled: false },
   ],
   /** 文本生产阶段的数据流（源系统 STAGE_AGENTS 的 inputLabel 原文口径） */
   stagePipeline: [

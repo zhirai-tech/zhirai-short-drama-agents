@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { ZHIRAI_AGENTS, ZHIRAI_TOPOLOGY, ZHIRAI_DIRECTOR_TEST_MODE } from '../agents/definitions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -130,20 +131,88 @@ const badImportMeta = rawPatch
   .find((line) => line.includes('import.meta'));
 check(!badImportMeta, `patch 的可执行行未使用 import.meta${badImportMeta ? `（发现：${badImportMeta.trim().slice(0, 80)}）` : ''}`);
 
-// Director 必须挂 ask_user + 5 个派活工具；执行角色不得挂派活工具
+// Director 必须挂 ask_user + 5 个派活工具声明；执行角色不得挂派活工具
 const dir = presets.find((p) => p.id === 'zhirai-director');
 check(!!dir, '存在 zhirai-director preset');
 if (dir) {
   const names = dir.plugins.map((p) => p.name);
   check(names.includes(TOOL_ASK_USER), 'director 挂了 ask-user（结构化提问）');
   const subs = dir.plugins.filter((p) => p.name === TOOL_SUBAGENT);
-  check(subs.length === 5, `director 的派活工具数 = ${subs.length}（期望 5，对应 5 个执行角色）`);
+  check(subs.length === 5, `director 的派活工具声明数 = ${subs.length}（期望 5，对应 5 个执行角色）`);
   check(new Set(subs.map((s) => s.config.toolName)).size === 5, 'director 的 5 个派活工具名互不重复');
 }
 for (const p of presets.filter((x) => x.id !== 'zhirai-director')) {
   const hasSub = p.plugins.some((q) => q.name === TOOL_SUBAGENT);
   check(!hasSub, `${p.id}: 执行角色不挂派活工具（与源系统 TOOL_CALLING_ROLES 一致）`);
 }
+
+// ── 4b. 临时暂停开关：dispatchEnabled === false 的边必须带 disabled: true，启用的边必须不带 ──
+// 语义：行**完整保留**（provider/toolName/persona 原样），只额外 `disabled: true`，
+// 于是不进入 DIRECTOR 可调用的工具集合；Loader 对 disabled 行不实例化、不校验 config，
+// 所以暂停既不会报错、也不会把 preset 打成 broken。
+const edgeRows = new Map();
+{
+  const dirRow = presetRows.find((r) => r.config?.id === 'zhirai-director');
+  const byId = new Map();
+  for (const l of rawPatch.split(/\r?\n/)) {
+    const m = /^\s+- id: ([a-z]_dispatch)\s*$/.exec(l);
+    if (m) byId.set(m[1], null);
+  }
+  // 用 YAML 解析后的行对象做权威判定（注释里的文字不参与）
+  for (const p of dirRow?.config?.plugins ?? []) {
+    if (p.name === TOOL_SUBAGENT && p.id) edgeRows.set(p.id, p);
+  }
+}
+for (const e of ZHIRAI_TOPOLOGY.dispatchEdges) {
+  const row = edgeRows.get(e.tool);
+  const shouldPause = e.dispatchEnabled === false;
+  check(!!row, `派活行存在：${e.tool} → ${e.to}`);
+  if (!row) continue;
+  check(
+    shouldPause ? row.disabled === true : row.disabled === undefined,
+    `派活行 ${e.tool} → ${e.to}：${shouldPause ? '已暂停（disabled: true）' : '启用（无 disabled）'}，实际 disabled=${JSON.stringify(row.disabled)}`,
+  );
+  check(row.config?.provider === 'spawn', `${e.tool}: 暂停/启用都不丢 provider`);
+  check(row.config?.toolName === e.tool, `${e.tool}: 暂停/启用都不丢 toolName`);
+  check(typeof row.config?.persona === 'string' && row.config.persona.length > 0, `${e.tool}: 暂停/启用都不丢 persona（恢复即可用）`);
+}
+const pausedEdges = ZHIRAI_TOPOLOGY.dispatchEdges.filter((e) => e.dispatchEnabled === false);
+const activeEdges = ZHIRAI_TOPOLOGY.dispatchEdges.filter((e) => e.dispatchEnabled !== false);
+check(activeEdges.length === 1 && activeEdges[0].to === 'WRITER', `当前只放行 WRITER（实际放行：${activeEdges.map((e) => e.to).join(', ') || '无'}）`);
+check(pausedEdges.length === 4, `当前暂停 4 条派活边（实际 ${pausedEdges.length}）`);
+
+// ── 4c. 被暂停的四个 Agent 必须**完整保留**（本阶段只暂停调用，不删除任何 Agent）──
+const PAUSED_ROLES = ['ARTIST', 'VOICE_ACTOR', 'MUSIC_COMPOSER', 'EDITOR'];
+for (const role of PAUSED_ROLES) {
+  const def = ZHIRAI_AGENTS.find((a) => a.role === role);
+  check(!!def, `${role}: 定义仍在 definitions.js（未删除）`);
+  if (!def) continue;
+  const row = presetRows.find((r) => r.config?.id === def.presetId);
+  check(!!row, `${role}: preset 行仍在 patch（${def.presetId}）`);
+  check(!!row && typeof row.config?.name === 'string' && row.config.name.length > 0, `${role}: preset 仍带显示名`);
+  const persona = row?.config?.plugins?.find((p) => p.name === PERSONA);
+  check(!!persona && typeof persona.config?.prefix === 'string' && persona.config.prefix.trim().length > 0, `${role}: persona/prompt 仍在 patch`);
+  check(fs.existsSync(path.join(root, 'agents', def.presetId, 'SKILL.md')), `${role}: SKILL.md 仍在 agents/${def.presetId}/`);
+  check((row?.config?.plugins ?? []).length > 0, `${role}: preset 的 plugins 列表非空（工具配置保留）`);
+  check(def.userFacing === true, `${role}: 仍标记为可被用户直接选用（未禁用）`);
+}
+
+// ── 4d. 临时测试模式约束：只追加在 DIRECTOR 的 persona 尾部，且可整段删除 ──
+{
+  const dirRow = presetRows.find((r) => r.config?.id === 'zhirai-director');
+  const dirPersona = dirRow?.config?.plugins?.find((p) => p.name === PERSONA)?.config?.prefix || '';
+  check(dirPersona.endsWith(ZHIRAI_DIRECTOR_TEST_MODE), '临时测试模式约束追加在 DIRECTOR persona 的末尾（便于整段删除）');
+  check(dirPersona.includes('【临时测试模式】'), 'DIRECTOR persona 含临时测试模式标记');
+  const others = presets.filter((p) => p.id !== 'zhirai-director');
+  const leaked = others.filter((p) =>
+    (p.plugins.find((q) => q.name === PERSONA)?.config?.prefix || '').includes('【临时测试模式】'),
+  );
+  check(leaked.length === 0, `临时测试模式约束未泄漏到其他 Agent${leaked.length ? `（发现：${leaked.map((p) => p.id).join(', ')}）` : ''}`);
+}
+
+// ── 4e. 本阶段纪律：不得覆盖默认 Main Agent（官方 dsh-web-app 的 default: standard）──
+check(!/^\s+- id: agent-preset-registry\s*$/m.test(rawPatch), 'patch 未声明 agent-preset-registry（不覆盖默认 Main Agent）');
+check(!/^\s+default:\s/m.test(rawPatch), 'patch 未出现任何 default: 键（含改选 Main Agent 的可能）');
 
 // ── 5. 生成物与源系统 prompt 的一致性（逐字比对） ──
 const prompts = JSON.parse(fs.readFileSync(path.join(root, 'agents', 'prompts.json'), 'utf8'));
@@ -155,7 +224,15 @@ for (const a of prompts.agents) {
   check(inPatch.length > 0, `${a.presetId}: persona.prefix 已写入 patch（${inPatch.length} 字）`);
   // 源 prompt 只做 {language} 展开，其余必须逐字一致
   const expanded = String(a.sourcePrompt).split('{language}').join('Reply in the language the user writes in.');
-  check(inPatch === expanded, `${a.presetId}: prompt 与源系统原文逐字一致（展开 {language} 后）`);
+  if (a.presetId === 'zhirai-director') {
+    // DIRECTOR 的 persona = 源 prompt + 临时测试模式约束（后者可整段删除）。
+    // 因此校验：去掉追加段之后必须与源系统原文逐字一致，且追加段确实在末尾。
+    check(inPatch.endsWith(ZHIRAI_DIRECTOR_TEST_MODE), `${a.presetId}: 源 prompt 之后只追加了临时测试模式约束`);
+    const base = inPatch.slice(0, inPatch.length - ZHIRAI_DIRECTOR_TEST_MODE.length);
+    check(base === expanded, `${a.presetId}: 去掉追加段后与源系统原文逐字一致（展开 {language} 后）`);
+  } else {
+    check(inPatch === expanded, `${a.presetId}: prompt 与源系统原文逐字一致（展开 {language} 后）`);
+  }
   const skill = path.join(root, 'agents', a.presetId, 'SKILL.md');
   check(fs.existsSync(skill), `${a.presetId}: SKILL.md 存在`);
 }

@@ -20,7 +20,7 @@
 
 ### 第一层：运行时 Agent 舰队（6 个）—— 可被调用/派活
 
-| # | Role | Name | 职责（源 description 原文） | 工具调用 | Prompt 长度 |
+| # | Role | Name（源系统） | 职责（源 description 原文） | 工具调用 | Prompt 长度 |
 |---|---|---|---|---|---|
 | 1 | `DIRECTOR` | 主创作助手 | 总调度，可调用所有智能体 | ✅ 唯一具备 | 10,746 字 |
 | 2 | `WRITER` | 编剧 | 剧本创作 & 场景对白 & 分镜规划 | ❌ | 253 字 |
@@ -28,6 +28,12 @@
 | 4 | `VOICE_ACTOR` | 配音师 | 角色语音合成 & 旁白朗读 | ❌ | 187 字 |
 | 5 | `MUSIC_COMPOSER` | 音乐师 | 背景音乐生成 & 混音 | ❌ | 178 字 |
 | 6 | `EDITOR` | 剪辑师 | 视频合成 & 超分增强 & 输出 | ❌ | 157 字 |
+
+> **Harness 侧显示名的差异（仅 DIRECTOR）**：源系统里这个 Agent 叫「主创作助手」，且是**对话入口**。
+> 复制到 Harness 后它是**被官方 Main Agent 调用的普通子 Agent**（preset id `zhirai-director`），
+> 对外显示名为 **「ZHIRAI 创作总导演」**，以免与 Harness 官方 Main Agent（preset `standard`）的身份混淆。
+> 源系统原名与源 prompt 不受影响 —— `agents/prompts.json` 与 `_extracted-agents.json` 仍保留源系统原文用于溯源。
+> 其余 5 个执行角色显示名不变（`名称（ROLE）`）。
 
 **事实**：`agent-capability.ts` 的 `TOOL_CALLING_ROLES = ['DIRECTOR']` —— 只有 Director 有工具调用循环；其余 5 个角色的 `Agent.tools = []`（DB 实测），它们**只被 Director 派活**，不能自行调用工具。
 
@@ -53,33 +59,39 @@
 
 ## 二、调度关系（谁调用谁）
 
+**Harness 侧层级**（关键：官方 Main Agent 在上，ZHIRAI 创作总导演是它下面的子 Agent）：
+
 ```
-                        ┌──────────────────────────────┐
-                        │   用户 / 对话入口            │
-                        └──────────────┬───────────────┘
-                                       │
-                        ┌──────────────▼───────────────┐
-                        │  DIRECTOR  主创作助手          │
-                        │  · 唯一具备工具调用循环        │
-                        │  · 唯一可派活                  │
-                        │  · 承载 MAIN / DIRECTOR 阶段   │
-                        └───┬───┬───┬───┬───┬──────────┘
-      dispatch_agent(role)  │   │   │   │   │
-        ┌───────────────────┘   │   │   │   └───────────────────┐
-        │           ┌───────────┘   │   └───────────┐           │
-        ▼           ▼               ▼               ▼           ▼
-   ┌────────┐  ┌────────┐    ┌───────────┐  ┌──────────────┐  ┌────────┐
-   │ WRITER │  │ ARTIST │    │VOICE_ACTOR│  │MUSIC_COMPOSER│  │ EDITOR │
-   │ 编剧   │  │ 画师   │    │ 配音师    │  │ 音乐师       │  │ 剪辑师 │
-   ├────────┤  ├────────┤    ├───────────┤  ├──────────────┤  ├────────┤
-   │ STORY  │  │CHARACTER│   │ VOICE     │  │ MUSIC        │  │VIDEO_  │
-   │ SCRIPT │  │ SCENE  │    └───────────┘  └──────────────┘  │PROMPT  │
-   │STORY-  │  │STORY-  │                                     │ VIDEO  │
-   │BOARD   │  │BOARD   │                                     └────────┘
-   └────────┘  │IMAGE_  │
-               │PROMPT  │
-               └────────┘
+   ┌───────────────────────────────────────────┐
+   │  Harness 官方 Main Agent                  │
+   │  preset `standard`（部署默认，插件不覆盖） │
+   └────────────────────┬──────────────────────┘
+                        │  调用普通 Agent（subagent / session 预设选择）
+   ┌────────────────────▼──────────────────────┐
+   │  zhirai-director  显示名：ZHIRAI 创作总导演 │
+   │  · 唯一具备工具调用循环                    │
+   │  · 唯一可派活                              │
+   │  · 承载 MAIN / DIRECTOR 阶段               │
+   └───┬───┬───┬───┬───┬───────────────────────┘
+       │   │   │   │   │   dispatch_agent(role) / w_·a_·v_·m_·e_dispatch
+ ┌─────┘   │   │   │   └───────────────────────────┐
+ │ ┌───────┘   │   └───────────┐                   │
+ ▼ ▼           ▼               ▼                   ▼
+┌────────┐  ┌────────┐    ┌───────────┐  ┌──────────────┐  ┌────────┐
+│ WRITER │  │ ARTIST │    │VOICE_ACTOR│  │MUSIC_COMPOSER│  │ EDITOR │
+│ 编剧   │  │ 画师   │    │ 配音师    │  │ 音乐师       │  │ 剪辑师 │
+├────────┤  ├────────┤    ├───────────┤  ├──────────────┤  ├────────┤
+│ STORY  │  │CHARACTER│   │ VOICE     │  │ MUSIC        │  │VIDEO_  │
+│ SCRIPT │  │ SCENE  │    └───────────┘  └──────────────┘  │PROMPT  │
+│STORY-  │  │STORY-  │                                     │ VIDEO  │
+│BOARD   │  │BOARD   │                                     └────────┘
+└────────┘  │IMAGE_  │
+            │PROMPT  │
+            └────────┘
 ```
+
+源系统里 DIRECTOR 是**对话入口**（用户直接对话的对象）；在 Harness 里它不再占 Main Agent 的主位，
+而是官方 Main Agent 可调用的普通子 Agent，内部派活关系（Director → 5 个执行角色）完全不变。
 
 ### 调用关系事实
 
@@ -87,8 +99,29 @@
 |---|---|---|
 | 谁能派活 | `TOOL_CALLING_ROLES = ['DIRECTOR']` | 只有 Director |
 | 派活的 5 个目标 | `dispatch_agent` 的 `role` enum | `WRITER / ARTIST / VOICE_ACTOR / MUSIC_COMPOSER / EDITOR` |
-| 谁可直接被用户调用 | 对话入口 + `AGENTS` 列表 | 6 个都作为 Agent 记录存在；实际对话入口是 Director |
+| 谁可直接被用户调用 | 对话入口 + `AGENTS` 列表 | 6 个都作为 Agent 记录存在；源系统里实际对话入口是 Director |
 | 谁只能被 Agent 调用 | `Agent.tools = []` 的 5 个角色 | 它们没有工具，无法自行调用外部能力 |
+| Director 自身的调用者 | Harness 官方 Main Agent（preset `standard`） | 插件不声明 `agent-preset-registry`，因此 Director 不占 Main Agent 主位 |
+
+### ⏸ 当前临时状态：4 条派活边暂停（不删除任何 Agent）
+
+源系统的 5 条派活边在 Harness 侧由 `ZHIRAI_TOPOLOGY.dispatchEdges` 的 `dispatchEnabled` 控制。
+当前处于**文字创作联调阶段**，只放行 WRITER：
+
+| 边 | 工具 | `dispatchEnabled` | 生成的 preset 行 |
+|---|---|---|---|
+| DIRECTOR → WRITER | `w_dispatch` | `true` | 正常挂载 |
+| DIRECTOR → ARTIST | `a_dispatch` | `false` | 行保留 + `disabled: true`（不挂载） |
+| DIRECTOR → VOICE_ACTOR | `v_dispatch` | `false` | 行保留 + `disabled: true`（不挂载） |
+| DIRECTOR → MUSIC_COMPOSER | `m_dispatch` | `false` | 行保留 + `disabled: true`（不挂载） |
+| DIRECTOR → EDITOR | `e_dispatch` | `false` | 行保留 + `disabled: true`（不挂载） |
+
+**暂停 ≠ 删除**：这 4 个 Agent 的 preset、`persona`/prompt、`SKILL.md`、工具配置全部保留，
+`userFacing` 仍为 `true`，仍可被用户直接选用。恢复方式：把 `dispatchEnabled` 改回 `true`
+（或删掉该键）并重跑 `scripts/build-bundle.mjs`。
+
+> 本节描述的是**源系统**的真实架构；Harness 侧的暂停状态见
+> [README.md](README.md) 的「临时状态」一节与 `agents/definitions.js` 的 `dispatchEnabled` 注释。
 
 ### 数据传递（stage 流水线）
 

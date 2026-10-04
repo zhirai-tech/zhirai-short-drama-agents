@@ -1,5 +1,10 @@
-# 本文件由 scripts/build-bundle.cjs 从 definitions.js + _extracted-agents.json 生成 —— 请勿手改。
+# 本文件由 scripts/build-bundle.mjs 从 definitions.js + _extracted-agents.json 生成 —— 请勿手改。
 # 内容：1) Host 插件行（插件可见/可管理）  2) 每个 ZHIRAI Agent 一个 @deepseek-ai/dsh-agent-preset 声明
+# 刻意**不含** agent-preset-registry：默认 Main Agent 属于部署方（dsh-web-app 的 default: standard），
+# 插件覆盖它会抢占 Harness 官方 Main Agent 的主位（详见下方行内注释）。
+#
+# 当前临时状态：DIRECTOR 的 a_/v_/m_/e_dispatch 派活工具带 `disabled: true`（暂时不挂载，行本身完整保留），
+# 只放行 w_dispatch。四个目标 Agent 的定义/persona/skill 全部保留 —— 见 ZHIRAI_TOPOLOGY.dispatchEdges。
 #
 # 生成依据（源系统事实）：
 #   apps/api/src/modules/agent/default-agents.ts  —— 6 个系统 Agent 的身份与 prompt
@@ -15,20 +20,25 @@
       config:
         languageDirective: "Reply in the language the user writes in."
 
-    # ── Agent preset 注册表：声明本插件的默认 preset（Web/agent-preset 型 surface 用） ──
-    # 官方口径（@deepseek-ai/dsh-agent-preset-registry README）：`default` = 未显式请求时使用的 preset id。
-    - id: agent-preset-registry
-      name: '@deepseek-ai/dsh-agent-preset-registry'
-      config:
-        default: zhirai-director
+    # ── 本插件**不**声明 agent-preset-registry ──
+    # 历史上这里插入过一条 `- id: agent-preset-registry` / `config.default: zhirai-director`，
+    # 目的只是让 Web 的 preset 选择器默认选中 Director。但 `@deepseek-ai/dsh-agent-preset-registry`
+    # 是**部署级单例服务**（`provide()` 同名二次注册会抛 "service ... has been registered"），
+    # 官方 `dsh-web-app` bundle 已经声明了这条行（default: standard）。本插件再插一条同名行会：
+    #   1) 在合并后的组合里产生**两条** agent-preset-registry 行；
+    #   2) 让官方那条 mount 失败，本插件这条拿到服务，于是 `defaultId` 变成 zhirai-director，
+    #      抢占 Harness 官方 Main Agent 的主位。
+    # 结论：默认 Main Agent 是**部署方**的选择，插件不得覆盖。删掉这条行后，官方
+    # `dsh-web-app` 的 `default: standard` 生效；本插件的 6 个 preset 仍照常注册，
+    # 仍可被发现与选用，只是不再自称默认。
 
     # ── Agent 声明：源系统 6 个系统 Agent，一人一个 preset ──
-    # 主创作助手（DIRECTOR）· 源 Agent.id=cmt6g2fi30000pm100hclm4ng · 源 prompt 10746 字
+    # ZHIRAI 创作总导演（DIRECTOR）· 源 Agent.id=cmt6g2fi30000pm100hclm4ng · 源 prompt 10746 字
     - id: preset-zhirai-director
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: zhirai-director
-        name: "主创作助手（DIRECTOR）"
+        name: "ZHIRAI 创作总导演"
         description: "总调度，可调用所有智能体"
         order: 1
         plugins:
@@ -170,6 +180,19 @@
 
                 ## Output language
                 Reply in Reply in the language the user writes in.
+
+                ---
+
+                ## 【临时测试模式】当前阶段只做文字创作（本段为临时约束，非系统原设定）
+
+                当前处于**文字创作联调阶段**：只测试「用户 → Harness 主 Agent → 你（总导演）→ 编剧 → 项目文件」这条链路。在这个阶段里：
+
+                - **只执行**文字创作、剧本创作与项目文件整理：故事大纲、完整故事、分集卡、剧本、对白、旁白、分镜文字稿、角色与场景的文字设定。
+                - **不要主动规划或承诺**图片生成、视频生成、配音、音乐、剪辑这类生产环节；不要在正文里排这些工序的排期。
+                - 当前**只有派给编剧（WRITER）的通道**可用。**不要尝试调用**已经暂时停用的画师 / 配音师 / 音乐师 / 剪辑师派活通道 —— 它们此刻不在你的工具清单里，调用只会失败。
+                - 如果用户的需求涉及图片、视频、配音、音乐或剪辑：**先把这一轮能做的文字/剧本部分完整做完**（例如先把该集剧本与分镜文字写完），然后**如实说明**这些视觉/音频环节属于暂停中的能力、当前阶段暂不执行。
+                - **绝不伪造产出**：不要声称已经生成或已派出图片、视频、音频、成片，也不要用文字假装某个媒体文件已经存在于项目里。没有做就说没做。
+                - 不要因为缺少这些工具就停下整条链：文字部分的交付要完整、可直接归档进项目文件。
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -185,6 +208,19 @@
           - id: ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
           # 派活：每个执行角色一个具名 subagent 工具（源系统 dispatch_agent(role) 的 DSH 形态）
+          #
+          # ── 下面的派活工具暂时停用（TEMPORARY，不是删除、不是废弃）──────────────────
+          # 这些行**完整保留**（provider / toolName / persona 一字未改），只加 `disabled: true`，
+          # 因此不会进入 DIRECTOR 当前可调用的工具集合；Loader 对 disabled 行不实例化、也不校验 config，
+          # 所以它们既不会报错，也不会把整个 preset 打成 broken。
+          # 目标 Agent 本身（ARTIST / VOICE_ACTOR / MUSIC_COMPOSER / EDITOR）及其 persona/skill 完全不受影响。
+          #
+          # 恢复方式：把 agents/definitions.js 里对应边的 `dispatchEnabled` 改回 true（或删掉该键），
+          # 重跑 `node scripts/build-bundle.mjs`，然后删掉本段（含下面的 disabled: true 行）。
+          # 暂停中：a_dispatch → ARTIST
+          # 暂停中：v_dispatch → VOICE_ACTOR
+          # 暂停中：m_dispatch → MUSIC_COMPOSER
+          # 暂停中：e_dispatch → EDITOR
           - id: w_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
@@ -198,6 +234,8 @@
                 Reply in Reply in the language the user writes in.
           - id: a_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
+            # 暂时停用：见上方说明；恢复时删除本行即可
+            disabled: true
             config:
               provider: spawn
               toolName: a_dispatch
@@ -216,6 +254,8 @@
                 Reply in Reply in the language the user writes in.
           - id: v_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
+            # 暂时停用：见上方说明；恢复时删除本行即可
+            disabled: true
             config:
               provider: spawn
               toolName: v_dispatch
@@ -227,6 +267,8 @@
                 Reply in Reply in the language the user writes in.
           - id: m_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
+            # 暂时停用：见上方说明；恢复时删除本行即可
+            disabled: true
             config:
               provider: spawn
               toolName: m_dispatch
@@ -238,6 +280,8 @@
                 Reply in Reply in the language the user writes in.
           - id: e_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
+            # 暂时停用：见上方说明；恢复时删除本行即可
+            disabled: true
             config:
               provider: spawn
               toolName: e_dispatch

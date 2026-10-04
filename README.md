@@ -13,12 +13,99 @@
 
 | Agent（preset id） | 源 Role | 说明 |
 |---|---|---|
-| `zhirai-director` | DIRECTOR | 主创作助手：总调度，唯一可派活；挂 `ask-user` + 5 个具名派活工具 |
+| `zhirai-director` | DIRECTOR | **ZHIRAI 创作总导演**（源系统称「主创作助手」）：总调度，唯一可派活；挂 `ask-user` + 5 个具名派活工具。是**普通子 Agent**，不占用 Harness 官方 Main Agent 的主位。⚠️ 其中 4 条派活工具当前**暂时停用**，见下节 |
 | `zhirai-writer` | WRITER | 编剧：剧本 / 对白 / 分镜 |
 | `zhirai-artist` | ARTIST | 画师：定妆照 / 场景图 / 参考图 |
 | `zhirai-voice-actor` | VOICE_ACTOR | 配音师：台词配音 / 旁白 |
 | `zhirai-music-composer` | MUSIC_COMPOSER | 音乐师：背景音乐 |
 | `zhirai-editor` | EDITOR | 剪辑师：视频成片 |
+
+### ⚠️ 临时状态：总导演的四条派活边已暂停（非删除）
+
+当前处于**文字创作联调阶段**，只跑通这一条链：
+
+```
+用户 → Harness 官方 Main Agent → ZHIRAI 创作总导演 → w_dispatch → 编剧 → 项目文件
+```
+
+| 派活工具 | 目标 Agent | 当前状态 |
+|---|---|---|
+| `w_dispatch` | WRITER 编剧 | ✅ **启用**（唯一放行） |
+| `a_dispatch` | ARTIST 画师 | ⏸ 暂停（`disabled: true`） |
+| `v_dispatch` | VOICE_ACTOR 配音师 | ⏸ 暂停（`disabled: true`） |
+| `m_dispatch` | MUSIC_COMPOSER 音乐师 | ⏸ 暂停（`disabled: true`） |
+| `e_dispatch` | EDITOR 剪辑师 | ⏸ 暂停（`disabled: true`） |
+
+**暂停的实现方式**：`cordis.patch.yml` 里这 4 个 `@deepseek-ai/dsh-tool-subagent` 行**一字未删** ——
+`provider` / `toolName` / `persona` 全部原样保留，只额外加一行 `disabled: true`。
+Loader 对 `disabled` 行**不实例化、也不校验 config**，所以它们既不进总导演的工具集合，也不会报错、
+不会把 preset 打成 `broken`。
+
+被暂停的只是「总导演此刻能不能调用它」，**不是**「这个 Agent 是否存在」：
+
+- 4 个 Agent 的 preset、`persona`/prompt、`SKILL.md`、工具配置**全部保留**，仍可被用户直接选用；
+- 恢复方式见本节末尾。
+
+同时给总导演追加了一段**可整段删除**的临时约束（见 [agents/definitions.js](agents/definitions.js) 的
+`ZHIRAI_DIRECTOR_TEST_MODE`）：只做文字/剧本创作与项目文件整理，不规划也不承诺图片/视频/配音/音乐/剪辑环节，
+不尝试调用已停用的派活通道，不缺工具时**如实说明**而不是伪造产出。
+
+**恢复这 4 个 Agent 的派活**（只需改一处）：
+
+1. 打开 [agents/definitions.js](agents/definitions.js)，把 `ZHIRAI_TOPOLOGY.dispatchEdges` 里对应边的
+   `dispatchEnabled: false` 改成 `true`（或直接删掉该键，缺省即启用）；
+2. 重跑 `node scripts/build-bundle.mjs` 重新生成 `cordis.patch.yml`；
+3. 把新生成的 `cordis.patch.yml` 同步到 Harness 实际加载的插件安装目录，然后重启 Harness。
+
+#### 为什么用 `disabled: true` 而不是删行
+
+`@deepseek-ai/cordis-plugin-loader` 的 `Entry.update()` 对 `disabled` 行**直接返回**：
+
+```js
+// step 2: execute
+if (this.disabled) { this.fiber?.dispose(); return }   // ← 不 init()，因此也不校验 config
+```
+
+由此三点成立（均已在真实运行时验证）：
+
+1. 被禁用的行**不实例化**，其工具不会出现在任何 Agent 的工具目录里；
+2. 它的 `config` **不做 schema 校验**，所以「完整保留 provider/toolName/persona + 加一行 `disabled: true`」
+   既不会报错，也不会让整个 preset 变成 `broken`；
+3. preset 的挂载审计里 `if (entry.disabled) continue`，被禁用的子行不会计入失败行。
+
+#### 暂停后的实测结果（真实 Harness：desktop 同构 profile）
+
+| 检查项 | 结果 |
+|---|---|
+| 官方 Main Agent | `defaultId = "standard"` ✅ 未被覆盖 |
+| registry 行数 | 1（插件仍未声明 `agent-preset-registry`）✅ |
+| preset 总数 / `broken` | 10 / 0 ✅ |
+| 总导演工具目录（11 个） | `ask_user_question`, `interrupt_agent`, `list_agents`, `send_message`, `spawn_teammate`, `team_task_create`, `team_task_get`, `team_task_list`, `team_task_update`, **`w_dispatch`**, `wait_agent` |
+| 派活工具 | `w_dispatch` ✅ 在；`a_/v_/m_/e_dispatch` ✅ 均不在 |
+| 4 个被暂停的 Agent | `resolve(zhirai-artist / -voice-actor / -music-composer / -editor)` 全部 OK ✅ |
+
+> 总导演的 system prompt 由 `dsh-persona` 的 `complete: true` 独占（模型只看到这段 prefix），
+> 因此追加的「临时测试模式」约束确实会进入模型上下文，不是仅存在于文件里。
+
+#### 文字创作链路端到端实测（真实模型轮）
+
+在真实 Harness 上跑通了本阶段唯一要验的链路，三次完整跑全部 PASS：
+
+| 跳 | 机制 | 证据 |
+|---|---|---|
+| Harness 官方 Main Agent（`standard`） | 宿主侧 mount（= `dsh-api-session-controller.composeAgent`，与 UI 选择器同一调用） | `composedPreset=standard`，32 个工具，真实模型轮正常 |
+| → ZHIRAI 创作总导演 | 同上（跨 preset） | `composedPreset=zhirai-director`，11 个工具 |
+| → 编剧（WRITER） | **模型真实调用 `w_dispatch`**（`provider: spawn`） | 父会话 `tool/call name=w_dispatch`；`subagent/catalog childId=f12f2f46-…`；子 Agent persona 实测为 `You are the ZHIRAI screenwriter Agent…` |
+| → 项目文件 | 真实落盘 | `01_故事大纲.md` 4769 B（编剧正文逐字）；`02_主Agent归档.md` 4408 B（主 Agent 用自己的 fs 工具归档） |
+
+三次跑分别产出 1099 / 1447 / 1576 字中文故事大纲，题材各异，总导演回复与编剧正文逐字一致 → 真实生成，非模板。
+
+**机制限制（如实记录）**：当前 Harness 的模型可见工具里**没有**「按名字指定 preset」的委派参数
+（`subagent` / `subagent_fork` / `spawn_teammate` / `workflow` 的入参中都无 preset 字段）。
+因此「standard → 具名 preset」这一跳只能由**用户/宿主侧**发起（UI 预设选择器，或 `agentPresets.select`），
+不是模型自主委派。另外 `w_dispatch` 派出的子 Agent 继承的是**父 preset revision**，
+其身份由 `w_dispatch` 的 `persona` 覆盖决定 —— 它不是 `zhirai-writer` preset 的一个挂载实例。
+
 
 每个 Agent 的 `persona.prefix` 是源系统**运行版本 prompt 的原文**（仅把 `{language}` 占位符展开为语言指令）。
 逐字一致性由 `scripts/validate-bundle.mjs` 强制校验（与源 `dev.db` 的 `Agent.prompt_template` 逐字比对）。
@@ -30,7 +117,7 @@ zhirai-short-drama-agents/
 ├── package.json                 ← bundle manifest（dsh.bundle.patch 指向下方 patch）
 ├── icon.svg                     ← 插件卡片图标
 ├── index.js                     ← Host 插件（apply/Config；暴露只读架构服务）
-├── cordis.patch.yml             ← 【生成物】1 个 Host 行 + 6 个 agent-preset 声明
+├── cordis.patch.yml             ← 【生成物】1 个 Host 行 + 6 个 agent-preset 声明（不含 agent-preset-registry）
 ├── locale/{zh,en}.json          ← 插件卡片标题/描述
 ├── agents/
 │   ├── definitions.js           ← Agent 身份/关系/上下文/工具映射（唯一数据源）
@@ -102,7 +189,56 @@ pnpm --dir "$env:DSH_PROFILE_DIR" add "link:<本目录绝对路径>"
 
 | surface | persona 入口 | 为什么 |
 |---|---|---|
-| Web 等挂载了 preset 系统的 surface | `cordis.patch.yml` 内的 6 个 `agent-preset` 声明 + `agent-preset-registry.default = zhirai-director` | 官方 preset 机制 |
+| Web 等挂载了 preset 系统的 surface | `cordis.patch.yml` 内的 6 个 `agent-preset` 声明 | 官方 preset 机制 |
+
+### 关于默认 Main Agent（重要）
+
+插件**不声明** `agent-preset-registry`，因此**不会**成为 Harness 的默认 Main Agent：
+
+- `@deepseek-ai/dsh-agent-preset-registry` 的 `config.default` 就是「新会话未显式指定 preset 时使用的 preset id」，
+  即 Harness 官方 Main Agent 的身份来源。
+- 这条行**由官方 `dsh-web-app` bundle 声明**（`config.default: standard`）。`- insert:` 不做 id 去重，
+  插件若再插一条同 id 行，就会在合并后的组合里产生**两条** `agent-preset-registry`；
+  而 Loader 的 `EntryGroup` 按 id 建 `store`（后者胜），因此官方那条的配置被整体丢弃，
+  `defaultId` 变成插件的 preset —— 这正是「ZHIRAI 抢占默认 Main Agent」的成因。
+- 默认 Main Agent 属于**部署方**的选择，插件不得覆盖。删掉这条行后，官方 `standard` 生效；
+  本插件 6 个 preset 仍照常注册、仍可被发现与选用（在 Harness 的 Agent 预设名册里位于「自定义」分组）。
+
+> 想在 Harness 里把某个 ZHIRAI Agent 设为默认，用官方的「设为新任务默认」即可（写入
+> `agent-preset-registry.selectedDefault`，属于用户偏好，不是插件声明）。
+
+### 修改后的 Agent 层级
+
+```
+Harness 官方 Main Agent  —— preset `standard`（部署默认，插件不覆盖）
+  └─ ZHIRAI 创作总导演    —— preset `zhirai-director`（普通子 Agent，可被发现/选用）
+       ├─ 编剧（WRITER）           preset `zhirai-writer`
+       ├─ 画师（ARTIST）           preset `zhirai-artist`
+       ├─ 配音师（VOICE_ACTOR）    preset `zhirai-voice-actor`
+       ├─ 音乐师（MUSIC_COMPOSER） preset `zhirai-music-composer`
+       └─ 剪辑师（EDITOR）         preset `zhirai-editor`
+```
+
+6 个 ZHIRAI preset 全部注册在同一个 `agent-preset-registry` 名册里，在 Harness 的 Agent 预设选择器中
+位于「自定义」分组（官方 4 个 `standard` / `ptc` / `minimal` / `cordis` 位于「内置」分组）——
+因为本插件的 preset 自带 `name`，官方据此把它们判为用户自定义预设。
+
+### 该修改的实测结果（真实 Harness 运行时）
+
+在与 desktop profile **完全相同的 bundle 组合**上启动真实 Harness 并读取活动 registry：
+
+| 项目 | 修改前 | 修改后 |
+|---|---|---|
+| `agentPresets.defaultId` | `zhirai-director` ❌ | `standard` ✅（官方 Main Agent） |
+| 组合里的 `agent-preset-registry` 行数 | 2（官方配置被后者丢弃） | 1 ✅ |
+| preset 名册总数 | 10 | 10（无重复、无丢失） |
+| ZHIRAI preset | 6 | 6 ✅ |
+| `broken` preset | 0 | 0 ✅ |
+| `resolve('zhirai-director')` | 成功 | 成功 ✅（仍可被调用） |
+
+> 注意：`node_modules` 里的 bundle patch **不在** Harness HMR 的监听范围内
+> （HMR 只监听 profile 的 `cordis.patch.yml` / `package.json`），因此替换插件包后需要**重启 Harness**
+> 才能看到上面的改动生效。
 
 插件**不再**做顶层的 `id: system-prompt` 覆盖：那会把整个 Harness（含默认会话）的 persona 换成 Director prompt，污染所有非 ZHIRAI 会话。现在 6 个 Agent 的身份**只**由各自的 preset 提供 —— 会话选中某个 preset 时，preset 作用域内的 `@deepseek-ai/dsh-persona` 会遮蔽部署 persona，可见性范围正好限制在 ZHIRAI 会话内。
 

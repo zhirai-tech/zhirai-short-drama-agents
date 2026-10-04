@@ -1,9 +1,9 @@
 ---
 name: zhirai-director
-description: 主创作助手（DIRECTOR）的职责与生产阶段口径 —— 复制自 ZHIRAI 短剧系统的 DIRECTOR Agent。当任务属于这些阶段时加载本技能。
+description: ZHIRAI 创作总导演（DIRECTOR）的职责与生产阶段口径 —— 复制自 ZHIRAI 短剧系统的 DIRECTOR Agent。当任务属于这些阶段时加载本技能。
 ---
 
-# 主创作助手（DIRECTOR）
+# ZHIRAI 创作总导演（DIRECTOR）
 
 来源：ZHIRAI 短剧系统 `Agent` 表（is_system=1）中 role=DIRECTOR 的运行中定义。
 

@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ZHIRAI_AGENTS, ZHIRAI_TOPOLOGY, LANGUAGE_DIRECTIVE } from '../agents/definitions.js';
+import { ZHIRAI_AGENTS, ZHIRAI_TOPOLOGY, LANGUAGE_DIRECTIVE, ZHIRAI_DIRECTOR_TEST_MODE } from '../agents/definitions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -67,6 +67,15 @@ const agents = ZHIRAI_AGENTS.map((a) => {
   };
 });
 
+/**
+ * DIRECTOR 的 persona：源 prompt 原文 + 临时测试模式约束（后者只在 bundle 里追加，不写回源定义）。
+ * 其余 Agent 原样使用源 prompt。
+ */
+const personaFor = (a) => (a.role === 'DIRECTOR' ? a.prompt + ZHIRAI_DIRECTOR_TEST_MODE : a.prompt);
+
+/** 暂停中的派活边（`dispatchEnabled === false`）。缺省视为启用。 */
+const pausedEdges = ZHIRAI_TOPOLOGY.dispatchEdges.filter((e) => e.dispatchEnabled === false);
+
 // ── 1. prompts.json（完整原文，供审计与在 Harness 里查看） ──
 fs.writeFileSync(
   path.join(root, 'agents', 'prompts.json'),
@@ -76,7 +85,19 @@ fs.writeFileSync(
         source: 'apps/api/src/modules/agent/default-agents.ts + dev.db Agent(is_system=1)',
         agents: agents.map((a) => ({ role: a.role, sourceAgentId: a.sourceAgentId, promptLength: a.sourcePrompt.length })),
       },
-      note: 'prompt 为源系统运行版本原文；仅把 {language} 占位符展开为语言指令（见 ADAPTERS.languagePlaceholder）。',
+      note: 'prompt 为源系统运行版本原文；仅把 {language} 占位符展开为语言指令（见 ADAPTERS.languagePlaceholder）。effectivePrompt = bundle 里 DIRECTOR persona 实际使用的文本（源 prompt + 可整段删除的临时测试模式约束）；其余 Agent 两者相同。',
+      temporaryPause: {
+        why: '当前阶段只联调文字创作链路（用户 → Harness 主 Agent → 总导演 → 编剧 → 项目文件），因此暂停总导演对其余四条派活边的调用。',
+        pausedDispatchEdges: ZHIRAI_TOPOLOGY.dispatchEdges
+          .filter((e) => e.dispatchEnabled === false)
+          .map((e) => ({ tool: e.tool, to: e.to })),
+        activeDispatchEdges: ZHIRAI_TOPOLOGY.dispatchEdges
+          .filter((e) => e.dispatchEnabled !== false)
+          .map((e) => ({ tool: e.tool, to: e.to })),
+        mechanism: 'preset 内对应的 @deepseek-ai/dsh-tool-subagent 行保留完整声明，仅加 disabled: true（Loader 不实例化、不校验 config）。',
+        restore: 'agents/definitions.js 的 ZHIRAI_TOPOLOGY.dispatchEdges 里把该边 dispatchEnabled 改回 true（或删掉该键），重跑 scripts/build-bundle.mjs。',
+        note: '被暂停的四个 Agent（ARTIST / VOICE_ACTOR / MUSIC_COMPOSER / EDITOR）本体、persona/prompt、skill 目录与生成文件全部保留，未被删除或禁用。',
+      },
       agents: agents.map((a) => ({
         role: a.role,
         presetId: a.presetId,
@@ -85,6 +106,7 @@ fs.writeFileSync(
         sourceTools: a.sourceTools,
         sourcePrompt: a.sourcePrompt,
         prompt: a.prompt,
+        effectivePrompt: personaFor(a),
       })),
     },
     null,
@@ -187,8 +209,13 @@ const blockScalar = (text, indent) => {
 };
 
 let yml = '';
-yml += '# 本文件由 scripts/build-bundle.cjs 从 definitions.js + _extracted-agents.json 生成 —— 请勿手改。\n';
+yml += '# 本文件由 scripts/build-bundle.mjs 从 definitions.js + _extracted-agents.json 生成 —— 请勿手改。\n';
 yml += '# 内容：1) Host 插件行（插件可见/可管理）  2) 每个 ZHIRAI Agent 一个 @deepseek-ai/dsh-agent-preset 声明\n';
+yml += '# 刻意**不含** agent-preset-registry：默认 Main Agent 属于部署方（dsh-web-app 的 default: standard），\n';
+yml += '# 插件覆盖它会抢占 Harness 官方 Main Agent 的主位（详见下方行内注释）。\n';
+yml += '#\n';
+yml += '# 当前临时状态：DIRECTOR 的 a_/v_/m_/e_dispatch 派活工具带 `disabled: true`（暂时不挂载，行本身完整保留），\n';
+yml += '# 只放行 w_dispatch。四个目标 Agent 的定义/persona/skill 全部保留 —— 见 ZHIRAI_TOPOLOGY.dispatchEdges。\n';
 yml += '#\n';
 yml += '# 生成依据（源系统事实）：\n';
 yml += '#   apps/api/src/modules/agent/default-agents.ts  —— 6 个系统 Agent 的身份与 prompt\n';
@@ -204,12 +231,17 @@ yml += "      name: '@local/zhirai-short-drama-agents'\n";
 yml += '      config:\n';
 yml += '        languageDirective: ' + JSON.stringify(LANGUAGE_DIRECTIVE) + '\n';
 yml += '\n';
-yml += '    # ── Agent preset 注册表：声明本插件的默认 preset（Web/agent-preset 型 surface 用） ──\n';
-yml += '    # 官方口径（@deepseek-ai/dsh-agent-preset-registry README）：`default` = 未显式请求时使用的 preset id。\n';
-yml += '    - id: agent-preset-registry\n';
-yml += "      name: '@deepseek-ai/dsh-agent-preset-registry'\n";
-yml += '      config:\n';
-yml += `        default: ${ZHIRAI_AGENTS[0].presetId}\n`;
+yml += '    # ── 本插件**不**声明 agent-preset-registry ──\n';
+yml += '    # 历史上这里插入过一条 `- id: agent-preset-registry` / `config.default: zhirai-director`，\n';
+yml += '    # 目的只是让 Web 的 preset 选择器默认选中 Director。但 `@deepseek-ai/dsh-agent-preset-registry`\n';
+yml += '    # 是**部署级单例服务**（`provide()` 同名二次注册会抛 "service ... has been registered"），\n';
+yml += '    # 官方 `dsh-web-app` bundle 已经声明了这条行（default: standard）。本插件再插一条同名行会：\n';
+yml += '    #   1) 在合并后的组合里产生**两条** agent-preset-registry 行；\n';
+yml += '    #   2) 让官方那条 mount 失败，本插件这条拿到服务，于是 `defaultId` 变成 zhirai-director，\n';
+yml += '    #      抢占 Harness 官方 Main Agent 的主位。\n';
+yml += '    # 结论：默认 Main Agent 是**部署方**的选择，插件不得覆盖。删掉这条行后，官方\n';
+yml += '    # `dsh-web-app` 的 `default: standard` 生效；本插件的 6 个 preset 仍照常注册，\n';
+yml += '    # 仍可被发现与选用，只是不再自称默认。\n';
 yml += '\n';
 yml += '    # ── Agent 声明：源系统 6 个系统 Agent，一人一个 preset ──\n';
 for (const a of agents) {
@@ -218,7 +250,10 @@ for (const a of agents) {
   yml += "      name: '@deepseek-ai/dsh-agent-preset'\n";
   yml += '      config:\n';
   yml += `        id: ${a.presetId}\n`;
-  yml += `        name: ${JSON.stringify(`${a.name}（${a.role}）`)}\n`;
+  // Director 的对外显示名**逐字**用 a.name（「ZHIRAI 创作总导演」），不加角色后缀：
+  // 它在 Harness 里是被官方 Main Agent 调用的子 Agent，显示名必须与 Main Agent 明确区分。
+  // 其余 5 个执行角色沿用「名称（ROLE）」形式，保持与源系统一致的识别度。
+  yml += `        name: ${JSON.stringify(a.role === 'DIRECTOR' ? a.name : `${a.name}（${a.role}）`)}\n`;
   yml += `        description: ${JSON.stringify(a.description)}\n`;
   yml += `        order: ${a.order}\n`;
   yml += '        plugins:\n';
@@ -226,7 +261,7 @@ for (const a of agents) {
   yml += '          - id: persona\n';
   yml += "            name: '@deepseek-ai/dsh-persona'\n";
   yml += '            config:\n';
-  yml += '              prefix: ' + blockScalar(a.prompt, 16) + '\n';
+  yml += '              prefix: ' + blockScalar(personaFor(a), 16) + '\n';
   yml += '              complete: true\n';
   yml += '              includeRuntimeContext: false\n';
   yml += '          # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责\n';
@@ -243,10 +278,23 @@ for (const a of agents) {
     yml += '          - id: ask-user\n';
     yml += "            name: '@deepseek-ai/dsh-tool-ask-user'\n";
     yml += '          # 派活：每个执行角色一个具名 subagent 工具（源系统 dispatch_agent(role) 的 DSH 形态）\n';
+    if (pausedEdges.length) {
+      yml += '          #\n';
+      yml += '          # ── 下面的派活工具暂时停用（TEMPORARY，不是删除、不是废弃）──────────────────\n';
+      yml += '          # 这些行**完整保留**（provider / toolName / persona 一字未改），只加 `disabled: true`，\n';
+      yml += '          # 因此不会进入 DIRECTOR 当前可调用的工具集合；Loader 对 disabled 行不实例化、也不校验 config，\n';
+      yml += '          # 所以它们既不会报错，也不会把整个 preset 打成 broken。\n';
+      yml += '          # 目标 Agent 本身（ARTIST / VOICE_ACTOR / MUSIC_COMPOSER / EDITOR）及其 persona/skill 完全不受影响。\n';
+      yml += '          #\n';
+      yml += '          # 恢复方式：把 agents/definitions.js 里对应边的 `dispatchEnabled` 改回 true（或删掉该键），\n';
+      yml += '          # 重跑 `node scripts/build-bundle.mjs`，然后删掉本段（含下面的 disabled: true 行）。\n';
+      for (const e of pausedEdges) yml += `          # 暂停中：${e.tool} → ${e.to}\n`;
+    }
     for (const e of ZHIRAI_TOPOLOGY.dispatchEdges) {
       const target = agents.find((x) => x.role === e.to);
       yml += `          - id: ${e.tool}\n`;
       yml += "            name: '@deepseek-ai/dsh-tool-subagent'\n";
+      if (e.dispatchEnabled === false) yml += '            # 暂时停用：见上方说明；恢复时删除本行即可\n            disabled: true\n';
       yml += '            config:\n';
       yml += '              provider: spawn\n';
       yml += `              toolName: ${e.tool}\n`;
