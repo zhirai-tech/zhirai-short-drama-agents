@@ -46,7 +46,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-director.persona")
+              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k0")
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -57,7 +57,7 @@
               # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；
               # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。
               customSkillDirs:
-                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").skillRoot()
+                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").R()
           # ── 能力发现（运行时读取 Harness 授予本 Agent 的能力；非静态白名单）──
           - id: capability-discovery
             name: "@local/zhirai-short-drama-agents/agents/capability-discovery.js"
@@ -97,7 +97,7 @@
               provider: spawn
               toolName: w_dispatch
               # persona 在该 schema 里是 string（不是 {prefix}）：源系统 prompt 原文整段作字符串传入。
-              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-writer.subpersona")
+              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k1")
           - id: a_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
             # 暂时停用：见上方说明；恢复时删除本行即可
@@ -106,7 +106,7 @@
               provider: spawn
               toolName: a_dispatch
               # persona 在该 schema 里是 string（不是 {prefix}）：源系统 prompt 原文整段作字符串传入。
-              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-artist.subpersona")
+              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k2")
           - id: v_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
             # 暂时停用：见上方说明；恢复时删除本行即可
@@ -115,7 +115,7 @@
               provider: spawn
               toolName: v_dispatch
               # persona 在该 schema 里是 string（不是 {prefix}）：源系统 prompt 原文整段作字符串传入。
-              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-voice-actor.subpersona")
+              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k3")
           - id: m_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
             # 暂时停用：见上方说明；恢复时删除本行即可
@@ -124,7 +124,7 @@
               provider: spawn
               toolName: m_dispatch
               # persona 在该 schema 里是 string（不是 {prefix}）：源系统 prompt 原文整段作字符串传入。
-              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-music-composer.subpersona")
+              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k4")
           - id: e_dispatch
             name: '@deepseek-ai/dsh-tool-subagent'
             # 暂时停用：见上方说明；恢复时删除本行即可
@@ -133,7 +133,7 @@
               provider: spawn
               toolName: e_dispatch
               # persona 在该 schema 里是 string（不是 {prefix}）：源系统 prompt 原文整段作字符串传入。
-              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-editor.subpersona")
+              persona: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k5")
 
     # 编剧（WRITER）· 源 Agent.id=cmt6g2fnz0001pm10sttfmsjv · 源 prompt 253 字
     - id: preset-zhirai-writer
@@ -148,7 +148,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-writer.persona")
+              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k6")
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -159,7 +159,7 @@
               # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；
               # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。
               customSkillDirs:
-                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").skillRoot()
+                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").R()
 
     # 画师（ARTIST）· 源 Agent.id=cmt6g2fuz0002pm109tf1j4bn · 源 prompt 908 字
     - id: preset-zhirai-artist
@@ -174,7 +174,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-artist.persona")
+              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k7")
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -185,7 +185,7 @@
               # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；
               # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。
               customSkillDirs:
-                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").skillRoot()
+                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").R()
 
     # 配音师（VOICE_ACTOR）· 源 Agent.id=cmt6g2g1u0003pm102hqgf4fo · 源 prompt 187 字
     - id: preset-zhirai-voice-actor
@@ -200,7 +200,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-voice-actor.persona")
+              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k8")
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -211,7 +211,7 @@
               # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；
               # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。
               customSkillDirs:
-                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").skillRoot()
+                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").R()
 
     # 音乐师（MUSIC_COMPOSER）· 源 Agent.id=cmt6g2g7z0004pm101rjcfdl9 · 源 prompt 178 字
     - id: preset-zhirai-music-composer
@@ -226,7 +226,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-music-composer.persona")
+              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("k9")
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -237,7 +237,7 @@
               # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；
               # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。
               customSkillDirs:
-                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").skillRoot()
+                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").R()
 
     # 剪辑师（EDITOR）· 源 Agent.id=cmt6g2geg0005pm10r8u7hjf0 · 源 prompt 157 字
     - id: preset-zhirai-editor
@@ -252,7 +252,7 @@
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").text("zhirai-editor.persona")
+              prefix: !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").T("ka")
               complete: true
               includeRuntimeContext: false
           # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责
@@ -263,5 +263,5 @@
               # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；
               # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。
               customSkillDirs:
-                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/prompts.cjs").skillRoot()
+                - !!js process.getBuiltinModule('node:module').createRequire(baseUrl)("@local/zhirai-short-drama-agents/_7f2c.cjs").R()
 
