@@ -1,0 +1,4 @@
+{
+  "title": "ZHIRAI Short-Drama Agent Crew",
+  "description": "The complete agent architecture copied from the ZHIRAI AI short-drama system: 6 agents (DIRECTOR, WRITER, ARTIST, VOICE_ACTOR, MUSIC_COMPOSER, EDITOR), with the dispatcher topology and production-stage contracts."
+}
