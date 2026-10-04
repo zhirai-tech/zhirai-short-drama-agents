@@ -172,6 +172,65 @@
 源系统**没有** Skill 概念，它用 `AGENT_ROLE_TO_CORE_KEYS` 把角色映射到 stage 作为记忆范围。
 插件把这一层落成**每个角色一个 SKILL.md**（含源 `STAGE_AGENTS.duty` 原文 + 上下游），由 `dsh-skill-filesystem` 提供、`dsh-tool-skill` 触发加载。
 
+> 注意：技能正文**不会自动注入**。`dsh-skill-filesystem` 只把「技能名 + 截断描述」作为一条 durable
+> user-role message 放进上下文，正文要模型自己调 `skill` 工具取。因此「系统固定行为」不靠技能承载，
+> 而是直接写进 DIRECTOR 的 persona（见下节）。
+
+### 能力发现（运行时读取 Harness 授予的能力）
+
+ZHIRAI **不维护**「本插件支持哪些工具」的静态白名单。总导演的能力来自运行时发现：
+
+```
+Harness Runtime 注册表（ctx.tools / ctx.skills / ctx.agentPresets / ctx.sandboxPolicy）
+        ↓  只读，不复制
+agents/capability-discovery.js（极薄适配器；不实现任何工具或 registry）
+        ↓
+总导演：收到任务 → 先 `capabilities` 问 Runtime → 按任务选能力 → 原生方式调用 → 需要时回读验证
+```
+
+| 能力类型 | 保留的原生调用方式 | 发现来源 |
+|---|---|---|
+| Tool | tool call（schema 由 Harness 直接给模型） | `ctx.tools.schemas(agentScope)` |
+| Skill | `skill` 工具按需加载正文 | `ctx.skills.list({ scope })` |
+| Agent / preset | preset 名册 / 派活工具 | `ctx.agentPresets.list()` |
+| 权限 / 沙箱 | 由 Harness 执行，插件只读 | `ctx.sandboxPolicy.resolve()`、`ctx.fs.sandboxMode` |
+
+**两条实测约束**（写进代码注释，避免后人踩坑）：
+
+1. `ctx.tools.schemas()` **不传 scope 只返回宿主 global 层** —— 在 preset 作用域里实测 `count=0`；
+   必须传「查看者 Agent 对象」（`exec.agent`），同一 agent 实测 19 个工具。
+2. 发现只能**读取**授权，不能**创造**授权：零工具行的 preset 调发现只会得到空目录。
+   因此 preset 的 mount 行是 **Harness 挂载机制的要求**，不是能力白名单。
+
+> 区分清楚：`ZHIRAI_PROJECT_LAYOUT`（8 个固定目录）与 `ZHIRAI_TOPOLOGY`（派活拓扑）是
+> **ZHIRAI 自己的业务契约**，Harness 无从提供，因此保留为静态配置；
+> 它们不是「能力清单」。
+
+---
+
+### 真实落盘（Harness 原生文件能力）
+
+源系统的 `read_project_content` 在 DSH 侧由 **Harness 原生** `@deepseek-ai/dsh-tool-fs` 承担
+（`read` / `write` / `edit`），插件**不自造任何文件工具、不复制文件系统实现**。
+
+关键机制：agent preset 的 `plugins:` 决定该 Agent 能看到哪些工具；部署里
+`tool-fs` / `tool-fs-search` / `skill-filesystem` / `tool-skill` 这些 agent-plane 行被
+`dsh-web-app` 的 base 层 `disabled: true`，**只由各 preset 自己重新挂载**。
+`zhirai-director` preset 因此显式挂了：
+
+| 行 | 官方包 | 用途 |
+|---|---|---|
+| `tool-fs` | `@deepseek-ai/dsh-tool-fs` | `read` / `write` / `edit` 真实读写（`write` 自动建父目录） |
+| `tool-fs-search` | `@deepseek-ai/dsh-tool-fs-search` | `glob` / `grep` |
+| `tool-skill` | `@deepseek-ai/dsh-tool-skill` | 按需加载角色技能正文 |
+
+- 宿主侧 `dsh-fs-sandbox` / `fs-observation-policy` / `sandbox-policy` 已由 base 提供，
+  所以 preset 只需挂 `tool-fs` 即可真实落盘；**不要**再挂 `dsh-fs-local`（会二次注册 `ctx.fs`）。
+- `w_dispatch` 派出的子 Agent 通过 `composeFrom(childCtx, parent.ctx)` **继承父 preset 的工具集合**，
+  因此子 Agent 同样拿到 `read` / `write`；其身份由 `w_dispatch` 的 `persona` 覆盖决定。
+- 相对路径以**会话 cwd** 为基准解析；`write` / `edit` 都会 `mkdir(dirname, { recursive: true })`；
+  `edit` 对不存在的文件报 `FS_STALE_VERSION`，建文件只能用 `write`。
+
 ---
 
 ## 五、插件化映射

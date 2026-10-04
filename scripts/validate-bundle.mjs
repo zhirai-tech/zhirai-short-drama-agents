@@ -214,6 +214,80 @@ for (const role of PAUSED_ROLES) {
 check(!/^\s+- id: agent-preset-registry\s*$/m.test(rawPatch), 'patch 未声明 agent-preset-registry（不覆盖默认 Main Agent）');
 check(!/^\s+default:\s/m.test(rawPatch), 'patch 未出现任何 default: 键（含改选 Main Agent 的可能）');
 
+// ── 4f. 真实落盘能力：DIRECTOR 必须挂上 Harness **原生**文件工具 ──
+// 根因：这些 agent-plane 行在部署里被 dsh-web-app 的 base 层 disabled，只有 preset 自己挂载才可见。
+// 若这里缺失，Agent 能生成大量正文却无法在磁盘上创建任何文件（只会说「等待写盘」）。
+{
+  const dirRow = presetRows.find((r) => r.config?.id === 'zhirai-director');
+  const rows = dirRow?.config?.plugins ?? [];
+  const byId = new Map(rows.map((p) => [p.id, p]));
+
+  check(!!byId.get('tool-fs') && byId.get('tool-fs').name === '@deepseek-ai/dsh-tool-fs', 'DIRECTOR 挂了 @deepseek-ai/dsh-tool-fs（read/write/edit 真落盘）');
+  check(byId.get('tool-fs')?.disabled !== true, 'DIRECTOR 的 tool-fs 未被禁用');
+  check(!!byId.get('tool-fs-search') && byId.get('tool-fs-search').name === '@deepseek-ai/dsh-tool-fs-search', 'DIRECTOR 挂了 @deepseek-ai/dsh-tool-fs-search（glob/grep）');
+  check(byId.get('tool-fs-search')?.config?.sampleOverCapGlobResults === false, 'tool-fs-search 带必填的 sampleOverCapGlobResults');
+  check(!!byId.get('tool-skill') && byId.get('tool-skill').name === '@deepseek-ai/dsh-tool-skill', 'DIRECTOR 挂了 tool-skill（skill 工具）');
+
+  // ── 能力发现适配器：必须挂载，且必须是本插件的薄适配器（不是自造 registry）──
+  const cap = byId.get('capability-discovery');
+  check(!!cap, 'DIRECTOR 挂了 capability-discovery（运行时能力发现适配器）');
+  check(!!cap && cap.name === '@local/zhirai-short-drama-agents/agents/capability-discovery.js', `capability-discovery 指向本插件适配器模块（实际：${cap?.name}）`);
+  check(!!cap && cap.disabled !== true, 'capability-discovery 未被禁用');
+  const adapterPath = path.join(root, 'agents', 'capability-discovery.js');
+  check(fs.existsSync(adapterPath), 'agents/capability-discovery.js 存在');
+  const adapterSrc = fs.existsSync(adapterPath) ? fs.readFileSync(adapterPath, 'utf8') : '';
+  // 适配器只读 Harness 注册表；不得自己维护工具名单，也不得自造 registry。
+  check(/ctx\.get\('tools'\)|ctx\.get\("tools"\)/.test(adapterSrc), '适配器通过 Harness ctx.tools 读取工具（复用官方 registry）');
+  check(/schemas\(\s*scope\s*\)/.test(adapterSrc), '适配器用 tools.schemas(scope) —— 传查看者 scope（不传只会拿到 global 层）');
+  check(/skills[\s\S]{0,80}\.list\(/.test(adapterSrc), '适配器通过 ctx.skills.list 读取技能');
+  check(/sandboxPolicy/.test(adapterSrc), '适配器读取 Harness 的 sandboxPolicy（不复制权限策略）');
+  check(!/registerProvider|tools\.register\(\s*\{[\s\S]{0,200}?name:\s*'(?!capabilities)/.test(adapterSrc), '适配器除只读 capabilities 入口外不注册其它工具');
+  // 不得在适配器里硬编码能力名单（工具名数组）
+  const hardcodedToolList = /\b(?:read|write|edit|glob|grep|bash|pwsh|web_search|web_fetch)\b\s*,\s*\n?\s*'(?:read|write|edit|glob|grep)/.test(adapterSrc);
+  check(!hardcodedToolList, '适配器未硬编码工具名单');
+
+  // preset 的 mount 行必须来自单一常量（避免多处维护能力清单）
+  const mountRows = ['tool-fs', 'tool-fs-search', 'tool-skill'];
+  for (const id of mountRows) check(!!byId.get(id), `mount 行存在：${id}`);
+  check(!/ZHIRAI_DIRECTOR_NATIVE_TOOLS|ZHIRAI_ALLOWED_TOOLS|ZHIRAI_SUPPORTED_TOOLS|ZHIRAI_TOOLS\b/.test(fs.readFileSync(path.join(root, 'scripts', 'build-bundle.mjs'), 'utf8')), '构建脚本不再引用旧的多套工具清单常量');
+
+  // skill provider 唯一性：同一 scope 内 `filesystem` skill provider 只能注册一次。
+  // 曾经因为额外加了一条 skill-filesystem 行，运行时报
+  // `a skill provider named "filesystem" is already registered in this scope` 并把 preset 打成 broken。
+  const skillFsRows = rows.filter((p) => p.name === SKILL_FS);
+  check(skillFsRows.length === 1, `DIRECTOR 只有一条 @deepseek-ai/dsh-skill-filesystem（实际 ${skillFsRows.length}，重复注册会让 preset broken）`);
+  check(skillFsRows[0]?.id === 'role-skill', 'DIRECTOR 的技能目录行仍是 role-skill（未另起一条重复行）');
+  check(skillFsRows[0]?.config?.includeDefaultRoots === false, 'DIRECTOR 的技能扫描已收窄为 includeDefaultRoots: false（只扫本插件技能）');
+  check(Array.isArray(skillFsRows[0]?.config?.customSkillDirs) && skillFsRows[0].config.customSkillDirs.length > 0, 'DIRECTOR 的 role-skill 仍带 customSkillDirs');
+
+  // 复用而非自造：不允许挂 fs-local（会与宿主的 fs-sandbox 二次注册 ctx.fs 而加载失败）
+  check(!byId.has('fs-local') && !rows.some((p) => p.name === '@deepseek-ai/dsh-fs-local'), 'DIRECTOR 未重复挂载 dsh-fs-local（避免 ctx.fs 二次注册）');
+  // 未新增任何非官方**业务工具**行：允许官方行 + 本插件自己的能力发现适配器
+  const ownAdapter = '@local/zhirai-short-drama-agents/agents/capability-discovery.js';
+  const nonOfficial = rows.filter(
+    (p) => typeof p.name === 'string' && !p.name.startsWith('@deepseek-ai/') && p.name !== 'cordis:group' && p.name !== ownAdapter,
+  );
+  check(nonOfficial.length === 0, `DIRECTOR 未新增自定义业务工具（非官方非适配器行：${nonOfficial.map((p) => p.name).join(', ') || '无'}）`);
+
+  // 固定落盘结构与 SSOT 纪律必须写在 persona 里（系统固定行为，不靠用户提示词）
+  const dirPersona = rows.find((p) => p.name === PERSONA)?.config?.prefix || '';
+  for (const dir of ['01_项目', '02_人物', '03_剧本', '04_分集', '05_分镜', '06_提示词', '07_制作资源', '08_执行']) {
+    check(dirPersona.includes(dir), `DIRECTOR persona 含固定目录 ${dir}`);
+  }
+  check(dirPersona.includes('单一事实源'), 'DIRECTOR persona 含 Single Source of Truth 纪律');
+  check(dirPersona.includes('必须真实写盘'), 'DIRECTOR persona 含真实写盘闭环要求');
+  check(/write/.test(dirPersona) && /read/.test(dirPersona), 'DIRECTOR persona 要求 write 后 read 回读验证');
+
+  // 提问通道：源 prompt 写的是 ask_user_choice（源系统工具，Harness 里不存在），
+  // 必须显式映射到 Harness 原生 ask_user_question，否则模型会自己发明文本协议，
+  // 把 `<function_calls><invoke …>` 当正文输出（真实事故根因）。
+  check(dirPersona.includes('ask_user_question'), 'DIRECTOR persona 明确要求调用 Harness 原生 ask_user_question');
+  check(dirPersona.includes('multi_select'), 'DIRECTOR persona 给出 selectionMode → multi_select 的参数映射');
+  check(dirPersona.includes('`title` → **`question`**'), 'DIRECTOR persona 给出 title → question 的参数映射');
+  check(/function_calls/.test(dirPersona) && /绝对不要/.test(dirPersona), 'DIRECTOR persona 明确禁止输出 tool-call 原码文本');
+  check(dirPersona.includes('[CHOICE]'), 'DIRECTOR persona 说明 [CHOICE] 标记在 Harness 中不被解析');
+}
+
 // ── 5. 生成物与源系统 prompt 的一致性（逐字比对） ──
 const prompts = JSON.parse(fs.readFileSync(path.join(root, 'agents', 'prompts.json'), 'utf8'));
 check(prompts.agents.length === 6, `prompts.json 含 6 个 Agent`);
@@ -225,12 +299,19 @@ for (const a of prompts.agents) {
   // 源 prompt 只做 {language} 展开，其余必须逐字一致
   const expanded = String(a.sourcePrompt).split('{language}').join('Reply in the language the user writes in.');
   if (a.presetId === 'zhirai-director') {
-    // DIRECTOR 的 persona = 源 prompt + 临时测试模式约束（后者可整段删除）。
-    // 因此校验：去掉追加段之后必须与源系统原文逐字一致，且追加段确实在末尾。
+    // DIRECTOR 的 persona = [cwd 声明] + 源 prompt + 临时测试模式约束（都可整段删除）。
+    // 注意 prefix 里出现 `{{cwd}}` 是**有意**的：persona 用 complete:true 会丢掉部署放在 suffix 里的
+    // cwd 提示，所以在 prefix 自带一份。插值发生在 assemble 之后的渲染阶段：
+    //   - `systemPrompt.assemble()` 返回的 section.text 仍是字面 `{{cwd}}`（未插值）；
+    //   - 真正发给模型的 `system/message` 里已是渲染后的绝对路径。
+    // 判断必须看 `system/message`，不能只看 assemble()。
+    check(inPatch.startsWith('Your working directory is {{cwd}}.'), `${a.presetId}: prefix 以 {{cwd}} 声明开头（complete 模式丢 suffix，需自带 cwd）`);
     check(inPatch.endsWith(ZHIRAI_DIRECTOR_TEST_MODE), `${a.presetId}: 源 prompt 之后只追加了临时测试模式约束`);
-    const base = inPatch.slice(0, inPatch.length - ZHIRAI_DIRECTOR_TEST_MODE.length);
-    check(base === expanded, `${a.presetId}: 去掉追加段后与源系统原文逐字一致（展开 {language} 后）`);
+    const body = inPatch.slice('Your working directory is {{cwd}}.\n\n'.length, inPatch.length - ZHIRAI_DIRECTOR_TEST_MODE.length);
+    check(body === expanded, `${a.presetId}: 去掉包装段后与源系统原文逐字一致（展开 {language} 后）`);
   } else {
+    // 其它角色没有 complete:true，cwd 由部署 suffix 提供，因此**不得**出现任何模板占位。
+    check(!inPatch.includes('{{'), `${a.presetId}: persona 不含任何 {{...}} 模板占位`);
     check(inPatch === expanded, `${a.presetId}: prompt 与源系统原文逐字一致（展开 {language} 后）`);
   }
   const skill = path.join(root, 'agents', a.presetId, 'SKILL.md');

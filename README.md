@@ -20,6 +20,87 @@
 | `zhirai-music-composer` | MUSIC_COMPOSER | 音乐师：背景音乐 |
 | `zhirai-editor` | EDITOR | 剪辑师：视频成片 |
 
+### ✅ 能力发现：运行时读取 Harness 授予的能力（不再维护工具白名单）
+
+**架构**：ZHIRAI 不再把「有哪些工具」当作自己要维护的知识。
+
+```
+Harness Runtime（注册表：tools / skills / agentPresets / sandboxPolicy …）
+        ↓  ZHIRAI 只读，不复制
+Capability Discovery Adapter（agents/capability-discovery.js，极薄一层）
+        ↓
+ZHIRAI 创作总导演：收到任务 → 先问 Runtime → 按任务选能力 → 原生方式调用 → 需要时回读验证
+```
+
+- 适配器**不重新实现任何工具 / registry**：它调用 Harness 官方
+  `ctx.tools.schemas(scope)`、`ctx.skills.list({scope})`、`ctx.agentPresets.list()`、
+  `ctx.sandboxPolicy.resolve()`，把结果如实交给总导演。
+- 唯一新增的工具是只读的 `capabilities` 发现入口（相当于官方 `cordis_inspect` 的只读投影），
+  **不是业务工具**。它的输出完全来自 Runtime，没有任何硬编码清单。
+- **权限的 Source of Truth 仍然是 Harness**：适配器只读沙箱策略，不做任何 allow/deny 判断；
+  被 Harness 拒绝的调用照实报告，不能绕过。
+
+**两个实测得来的硬约束**（写在适配器与构建脚本注释里，避免后人踩坑）：
+
+1. `ctx.tools.schemas()` **不传 scope 只返回宿主 global 层** —— 在 preset 作用域里实测得到
+   **0 个工具**；必须传「查看者 Agent 对象」（`exec.agent`），同一 agent 实测得到 19 个。
+2. 发现只能**读取**授权、不能**创造**授权：一个零工具行的 preset，调发现只会拿到空目录。
+   所以 preset 里那几条 mount 行是 **Harness 挂载机制的要求**（`dsh-web-app` 把 agent-plane 行
+   统一 `disabled`，要求各 preset 自己重新挂载），**不是 ZHIRAI 的能力白名单**。
+   「某能力此刻是否真可用」一律以发现的实时结果为准。
+
+**实测结果**（详见下文「能力发现实测」一节）：新增能力进入 Runtime 后，
+ZHIRAI **零代码改动**即可发现并使用。
+
+### ✅ 真实落盘能力（Harness 原生文件工具，非自造）
+
+**问题**：总导演能连续产出大量正文，却始终「已准备、等待写盘」——Windows 上既没有项目目录也没有文件。
+
+**根因**：agent preset 的 `plugins:` 决定该 Agent 能看到哪些工具。部署里
+`tool-fs` / `tool-fs-search` / `skill-filesystem` / `tool-skill` 这些 **agent-plane 行被
+`dsh-web-app` 的 base 层设为 `disabled: true`**，只由各 preset 自己重新挂载。
+原来的 `zhirai-director` preset **一条都没挂**，所以它没有任何写盘工具。
+
+**修法**：在原 preset 内补挂 **Harness 官方行**（不新增自定义工具、不复制文件系统实现）：
+
+| 行 | 官方包 | 提供 |
+|---|---|---|
+| `tool-fs` | `@deepseek-ai/dsh-tool-fs` | `read` / `write` / `edit` 等真实文件读写 |
+| `tool-fs-search` | `@deepseek-ai/dsh-tool-fs-search` | `glob` / `grep`（`sampleOverCapGlobResults` 为必填） |
+| `skill-filesystem` | `@deepseek-ai/dsh-skill-filesystem` | 只扫本插件自带技能目录（`includeDefaultRoots: false`） |
+| `tool-skill` | `@deepseek-ai/dsh-tool-skill` | `skill` 工具：按需加载角色技能 |
+
+刻意**不挂** `@deepseek-ai/dsh-fs-local`：宿主已经挂了 `dsh-fs-sandbox`，重复挂载会二次注册
+`ctx.fs` 并导致加载失败。宿主侧的 `dsh-fs-sandbox` / `fs-observation-policy` 已存在，
+所以只要 preset 挂上 `tool-fs`，`write` 就会真实落盘、并**自动创建父目录**。
+
+另外，`persona` 是 `complete: true`，会**丢掉 suffix**，而部署把 cwd 放在 suffix 里 ——
+因此 DIRECTOR 的 prefix 现在以 `Your working directory is {{cwd}}.` 开头，
+保证模型知道真实工作目录而不是去猜路径。
+
+### 固定项目结构与 Single Source of Truth（系统固定行为）
+
+已写入 DIRECTOR 的 persona（不需要用户每次在提示词里描述）：
+
+```
+<项目名>/
+├─ 01_项目/      项目定位、故事总纲、分季规划
+├─ 02_人物/      角色设定与角色视觉资产的文字口径
+├─ 03_剧本/      分集剧本、对白、旁白
+├─ 04_分集/      每集卡片与节奏表
+├─ 05_分镜/      分镜与镜头表
+├─ 06_提示词/    图片/视频提示词（本阶段只产出文字）
+├─ 07_制作资源/  制作资源清单（本阶段只登记，不生产）
+└─ 08_执行/      执行状态与进度
+```
+
+- **结构化数据只有一个 canonical source**：分镜/分集卡等以 **JSON 为唯一事实源**，
+  Markdown 是**导出视图**，不允许维护两份会各自漂移的数据；
+- 禁止为「看起来有文件」而复制重复内容；
+- 落盘必须走闭环：`write` → `read` **回读验证** → 报告**真实绝对路径**与文件大小；
+- 读写任一步失败必须**如实说明**（权限 / 沙箱 / 路径 / 工具缺失），
+  禁止出现「已准备 N 份材料」「等待写盘」「已归档」这类没有对应真实文件的话术。
+
 ### ⚠️ 临时状态：总导演的四条派活边已暂停（非删除）
 
 当前处于**文字创作联调阶段**，只跑通这一条链：

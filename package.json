@@ -7,7 +7,8 @@
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",
-    "./locale/*.json": "./locale/*.json"
+    "./locale/*.json": "./locale/*.json",
+    "./agents/capability-discovery.js": "./agents/capability-discovery.js"
   },
   "files": ["index.js", "agents", "locale", "cordis.patch.yml", "icon.svg"],
   "icon": "./icon.svg",

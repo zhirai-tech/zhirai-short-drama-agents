@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ZHIRAI_AGENTS, ZHIRAI_TOPOLOGY, LANGUAGE_DIRECTIVE, ZHIRAI_DIRECTOR_TEST_MODE } from '../agents/definitions.js';
+import { ZHIRAI_AGENTS, ZHIRAI_TOPOLOGY, LANGUAGE_DIRECTIVE, ZHIRAI_DIRECTOR_TEST_MODE, ZHIRAI_DIRECTOR_MOUNT_ROWS } from '../agents/definitions.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
@@ -261,19 +261,81 @@ for (const a of agents) {
   yml += '          - id: persona\n';
   yml += "            name: '@deepseek-ai/dsh-persona'\n";
   yml += '            config:\n';
-  yml += '              prefix: ' + blockScalar(personaFor(a), 16) + '\n';
+  // DIRECTOR 的 persona 用 `complete: true`，会丢掉 suffix（部署把 cwd 提示放在 suffix 里），
+  // 因此在 prefix 里自己声明一次工作目录，让模型**一开场**就知道绝对 cwd，不必猜落盘位置。
+  //
+  // 关于 `{{cwd}}` 的实测结论（两处证据，曾一度误判）：
+  //   - `systemPrompt.assemble()` 返回的 section.text 里仍是**字面** `{{cwd}}`（未插值）；
+  //   - 但**真正发给模型**的 `system/message` 事件里已是**渲染后的绝对路径**
+  //     （实测：`Your working directory is C:/Users/.../project.`）。
+  // 即插值发生在 assemble 之后的渲染阶段，所以 prefix 里可以安全使用 `{{cwd}}`；
+  // 判断这类问题必须以 `system/message`（真实请求）为准，不能只看 assemble() 的返回值。
+  yml += '              prefix: ' + blockScalar(a.role === 'DIRECTOR' ? `Your working directory is {{cwd}}.\n\n${personaFor(a)}` : personaFor(a), 16) + '\n';
   yml += '              complete: true\n';
   yml += '              includeRuntimeContext: false\n';
   yml += '          # 记忆范围 / 生产阶段口径：源系统该角色的 stage 职责\n';
   yml += '          - id: role-skill\n';
   yml += "            name: '@deepseek-ai/dsh-skill-filesystem'\n";
   yml += '            config:\n';
-  yml += '              includeDefaultRoots: true\n';
+  // DIRECTOR 只保留本插件自带的角色技能（includeDefaultRoots: false），避免把宿主/用户目录下的
+  // 无关技能拉进 ZHIRAI 会话。**不要**因此再挂第二条 skill-filesystem —— 同一 scope 内
+  // 一个 `filesystem` skill provider 只能有一条，重复会报错并把整个 preset 打成 broken（实测踩过）。
+  yml += `              includeDefaultRoots: ${a.role === 'DIRECTOR' ? 'false' : 'true'}\n`;
   yml += `              # !!js 由 DSH Cordis Loader 在行激活时求值（无模块作用域，不能写 import.meta）；\n`;
   yml += `              # 表达式用行作用域的 baseUrl（profile 根）反查本插件自己的安装目录。\n`;
   yml += `              customSkillDirs:\n`;
   yml += `                - !!js ${skillDirExpr(a.presetId)}\n`;
   if (a.role === 'DIRECTOR') {
+    // ── 能力发现：ZHIRAI 不再把「有哪些工具」当作需要自己维护的知识 ──
+    // 挂一个极薄的 Capability Discovery Adapter（本插件模块，见 agents/capability-discovery.js）。
+    // 它在运行时直接读 Harness 官方注册表，报告「当前实际授予本 Agent 的能力」：
+    //   ctx.tools.schemas(exec.agent) / ctx.skills.list({scope}) / ctx.agentPresets.list() / ctx.sandboxPolicy.resolve()
+    // 于是新增能力（新 tool / 新 MCP / 新 skill / 新 preset）进入 Runtime 并被授予本 Agent 后，
+    // ZHIRAI 无需改代码即可发现，并按能力原生调用方式使用。
+    //
+    // ⚠️ 实测要点 1（本设计的前提边界）：发现只能**读取**、不能**创造**授权。
+    //    `ctx.tools.schemas()` 不传 scope 只返回宿主 global 层；在 preset 作用域里实测 count=0。
+    //    必须传查看者 Agent 对象本身（exec.agent）；实测同一 agent 得到 13 个工具。
+    //    另外「没有挂载就没有能力」：一个零工具行的 preset 调发现只会得到空目录 ——
+    //    所以下面几条 mount 行是 **Harness 挂载机制的要求**，不是 ZHIRAI 的能力白名单。
+    //    一个能力是否真的可用，最终以 discovery 的实时结果为准。
+    // ⚠️ 实测要点 2：perset 子树 `provide()` 服务到 root realm 会 `Preset services require isolate realms`
+    //    导致整个 preset mount 失败；本适配器只**读**宿主服务，不提供任何服务。
+    // ⚠️ 实测要点 3：同一个 preset 里 `@deepseek-ai/dsh-skill-filesystem` 只能有一条
+    //    （重复会 `a skill provider named "filesystem" is already registered in this scope`）。
+    yml += '          # ── 能力发现（运行时读取 Harness 授予本 Agent 的能力；非静态白名单）──\n';
+    yml += '          - id: capability-discovery\n';
+    yml += `            name: ${JSON.stringify(`${PACKAGE_NAME}/agents/capability-discovery.js`)}\n`;
+    yml += '          # ── 以下 mount 行：Harness 要求 preset 显式挂载才可见（不是能力白名单）──\n';
+    yml += '          # 这些 agent-plane 行在部署里被 dsh-web-app 的 base 层 disabled，只有 preset 自己挂载才可见；\n';
+    yml += '          # 宿主侧 ctx.fs / fs-sandbox / sandbox-policy 已存在，挂上即真实可用。\n';
+    yml += '          # 是否真可用以 capability-discovery 的实时结果为准；被 Harness restrict 掉的能力会自动消失。\n';
+    // ── Harness 原生文件能力：让「文字创作 → 真实 Windows 文件系统」闭环成立 ──
+    // 全是官方行（read/write/edit/glob/grep + skill 加载），不自造文件系统、不新增自定义工具。
+    // 不要挂 @deepseek-ai/dsh-fs-local（宿主已挂 dsh-fs-sandbox，重复注册 ctx.fs 会加载失败）。
+    yml += '          # write 会自动创建父目录；相对路径以本会话 cwd 为基准。\n';
+    // ── mount 行清单：Harness 的挂载机制要求，与「能力发现」分工不同 ──
+    // 加新能力时通常**不需要**改这里：只要该能力进入 Runtime 并被授予本 Agent，
+    // discovery 就会自动报告。只有在「新能力需要 preset 显式挂载」时才需要加一行。
+    for (const row of ZHIRAI_DIRECTOR_MOUNT_ROWS) {
+      yml += `          - id: ${row.id}\n`;
+      yml += `            name: ${JSON.stringify(row.name)}\n`;
+      if (row.config) {
+        yml += '            config:\n';
+        for (const [k, v] of Object.entries(row.config)) {
+          if (Array.isArray(v)) {
+            if (v.length === 0) {
+              yml += `              ${k}: []\n`;
+            } else {
+              yml += `              ${k}:\n`;
+              for (const item of v) yml += `                - ${JSON.stringify(item)}\n`;
+            }
+          } else {
+            yml += `              ${k}: ${JSON.stringify(v)}\n`;
+          }
+        }
+      }
+    }
     yml += '          # 结构化提问：让用户做选择（源系统 ask_user_choice 的 DSH 等价机制）\n';
     yml += '          - id: ask-user\n';
     yml += "            name: '@deepseek-ai/dsh-tool-ask-user'\n";

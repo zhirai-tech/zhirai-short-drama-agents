@@ -18,6 +18,62 @@
 export const LANGUAGE_DIRECTIVE = 'Reply in the language the user writes in.';
 
 /**
+ * ── ZHIRAI 项目固定落盘结构（系统固定行为，不需要用户每次在提示词里描述） ──
+ *
+ * 这是 ZHIRAI 创作系统对「一个短剧项目」的固定目录契约。
+ * 由总导演在**第一次落盘时用 Harness 原生写盘能力真实创建**（`write` 会自动创建父目录）。
+ */
+export const ZHIRAI_PROJECT_LAYOUT = [
+  { dir: '01_项目', holds: '项目定位、故事总纲、分季规划' },
+  { dir: '02_人物', holds: '角色设定与角色视觉资产的文字口径' },
+  { dir: '03_剧本', holds: '分集剧本、对白、旁白' },
+  { dir: '04_分集', holds: '每集卡片与节奏表' },
+  { dir: '05_分镜', holds: '分镜与镜头表' },
+  { dir: '06_提示词', holds: '图片/视频提示词（本阶段只产出文字）' },
+  { dir: '07_制作资源', holds: '制作资源清单（本阶段只登记，不生产）' },
+  { dir: '08_执行', holds: '执行状态与进度' },
+];
+
+/**
+ * ── DIRECTOR preset 的 **mount 行**（Harness 挂载机制要求；**不是**能力白名单） ──
+ *
+ * 重要区分（本插件架构的核心）：
+ *   - **能力发现**（`agents/capability-discovery.js`）：运行时读 Harness 注册表，
+ *     回答「当前实际授予本 Agent 什么」。新增能力进入 Runtime 并被授予后自动出现，无需改本插件。
+ *   - **mount 行**（本常量）：Harness 要求 preset **显式挂载**某能力行，该 Agent 才看得见它。
+ *     这里列的是「必须显式挂载」的那几条，不是「允许使用」的清单。
+ *
+ * 实测边界（决定了为什么不能只留发现、删掉 mount 行）：
+ *   一个零工具行的 preset，调能力发现只会拿到**空目录** —— 发现只能**读取**授权，不能**创造**授权。
+ *   所以 mount 行必须保留；而「某能力此刻是否真可用」一律以发现的实时结果为准。
+ *
+ * 实测根因（当初为什么一条都没有）：agent preset 的 `plugins:` 决定该 Agent 能看到哪些工具；
+ * 部署里 `tool-fs` / `tool-fs-search` / `skill-filesystem` / `tool-skill` 这几条 agent-plane 行
+ * 被 `dsh-web-app` 的 base 层设为 `disabled: true`，只由各 preset **自己重新挂载**。
+ *
+ * 这里全是 Harness 官方行，**不新增任何自定义业务工具、不复制 Harness 文件系统实现**：
+ *   - `@deepseek-ai/dsh-tool-fs`         → read / write / edit 等真实文件读写（write 自动建父目录）
+ *   - `@deepseek-ai/dsh-tool-fs-search`  → 高性能文件搜索（补齐 glob/grep）
+ *   - `@deepseek-ai/dsh-tool-skill`      → `skill` 工具：按需加载角色技能正文
+ *
+ * 两条硬约束：
+ *   1. **不要**再加一条 `@deepseek-ai/dsh-skill-filesystem` —— 本 preset 已有 `role-skill` 提供
+ *      `filesystem` skill provider，重复会报 `a skill provider named "filesystem" is already
+ *      registered in this scope` 并把整个 preset 打成 broken（实测踩过）。
+ *   2. **不要**挂 `@deepseek-ai/dsh-fs-local` —— 宿主已挂 `dsh-fs-sandbox`，重复注册 `ctx.fs` 会加载失败。
+ */
+export const ZHIRAI_DIRECTOR_MOUNT_ROWS = [
+  { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+  {
+    id: 'tool-fs-search',
+    name: '@deepseek-ai/dsh-tool-fs-search',
+    // `sampleOverCapGlobResults` 在该 schema 里是 required 且无默认值，必须给。
+    config: { sampleOverCapGlobResults: false },
+  },
+  { id: 'tool-skill', name: '@deepseek-ai/dsh-tool-skill' },
+];
+
+/**
  * ── 临时文字创作测试约束（TEMPORARY · 非源系统 prompt 的一部分） ──
  *
  * 用途：当前阶段只联调「文字创作 / 剧本创作 / 项目文件整理」这条链，
@@ -46,6 +102,88 @@ export const ZHIRAI_DIRECTOR_TEST_MODE = [
   '- 如果用户的需求涉及图片、视频、配音、音乐或剪辑：**先把这一轮能做的文字/剧本部分完整做完**（例如先把该集剧本与分镜文字写完），然后**如实说明**这些视觉/音频环节属于暂停中的能力、当前阶段暂不执行。',
   '- **绝不伪造产出**：不要声称已经生成或已派出图片、视频、音频、成片，也不要用文字假装某个媒体文件已经存在于项目里。没有做就说没做。',
   '- 不要因为缺少这些工具就停下整条链：文字部分的交付要完整、可直接归档进项目文件。',
+  '',
+  '### ⚠️ 向用户提问：必须调用 Harness 原生 `ask_user_question`（本段为硬要求）',
+  '',
+  '上面源系统 prompt 里写的 **`ask_user_choice` 工具在当前 Harness 里并不存在**（那是源系统的工具名）。',
+  '在 Harness 中，提问的唯一通道是**原生工具 `ask_user_question`**。',
+  '',
+  '- **需要用户做选择 / 补充信息时，就调用 `ask_user_question` 工具**（你 tool schema 里那个真实的工具）。',
+  '  它的参数是 `questions` 数组，每项：`id`（必需，本调用内唯一）、`question`（必需）、可选 `header`、',
+  '  可选 `options`（每项 `label` 必需 + 可选 `description`）、可选 `multi_select`。',
+  '- **参数名转换**（源 prompt 用的是源系统口径，逐项对应如下）：',
+  '  - `title` → **`question`**',
+  '  - `options[].id` → 不需要；**直接用 `options[].label`**',
+  '  - `options[].label` → **`options[].label`**',
+  '  - `options[].description` → **`options[].description`**',
+  '  - `selectionMode: "multiple"` → **`multi_select: true`**（单选则省略或 `false`）',
+  '  - `maxSelected` / `confirmLabel` / `skipLabel` → 该工具没有这些参数，不要传',
+  '- Harness 会把它渲染成**原生问题 UI / 可点击选项**，用户的回答会作为工具结果返回给你，你再继续执行。',
+  '- **绝对不要**自己输出工具调用格式的文本（例如 `<function_calls>` / `<invoke …>` / 任何 XML 或 JSON 的 tool-call 原码），',
+  '  也**不要**手写 `[CHOICE]…[/CHOICE]` 标记块 —— 这些在 Harness 里都不会被解析，只会作为原码显示给用户。',
+  '  源 prompt 里提到这两种“通道”，是因为源系统有对应的解析器；**Harness 没有**，唯一有效的方式就是真正调用 `ask_user_question`。',
+  '- 选项请写进 `options`，**不要**在正文里再重复列一遍 A/B/C 或 1/2/3 让用户打字回复。',
+  '- 同理，源 prompt 说 `[AWAIT_CONFIRM]` 会变成「确认并继续」按钮 —— **Harness 不解析它**。',
+  '  需要用户确认时就用 `ask_user_question` 提问（例如两个选项：继续 / 先调整），不要靠输出标记等按钮。',
+  '',
+  '### 能力发现：先问 Runtime，不要凭记忆（本段为硬要求）',
+  '',
+  '你**不应该**依赖任何记忆里的固定工具清单。你的可用能力由 Harness Runtime 在运行时决定，可能随部署变化。',
+  '',
+  '固定动作顺序：',
+  '',
+  '1. **收到任务** → 先用 `capabilities` 工具读取「当前 Runtime 实际授予你的能力」（工具 / 技能 / preset / 沙箱策略 / 可见 service）。',
+  '2. **判断需要什么** → 按任务需要什么能力，去上一步的结果里找。',
+  '3. **有就直接调用** → 用该能力的**原生调用方式**（工具就 tool call；技能用 `skill` 工具加载正文；派活用对应 dispatch 工具）。',
+  '4. **没有就如实说** → 清单里没有的能力一律视为**当前不可用**，不要假设、不要硬试、不要用文字假装完成了。',
+  '5. **必要时再验证** → 写盘等有副作用的动作必须回读校验（见下节）。',
+  '',
+  '其它规则：',
+  '',
+  '- `capabilities` 是**只读**发现入口，输出完全来自 Harness 注册表，不是本项目的固定清单；能力发生变化（新增/被收窄）后重新调用即可拿到最新结果。',
+  '- 你**不能**通过任何方式给自己扩权：能不能用某能力由 Harness 的授权与沙箱决定，发现只负责如实报告。',
+  '- 被 Harness 拒绝的调用（权限 / 沙箱）→ 把原始错误**照实**报告，并说明这是 Runtime 的授权结果，**不要**绕过、不要换一种说法掩盖。',
+  '- 允许派活的角色同样以 `capabilities` 与你自己 tool schema 里**真实存在**的 dispatch 工具为准。',
+  '',
+  '### 必须真实写盘（本段为硬要求）',
+  '',
+  '- **「生成了内容」不等于「文件已写入硬盘」。** 本项目所有创作成果都必须用 **write 工具真实写入文件**；只在聊天里输出 Markdown **不算交付**。',
+  '- 报告进度时**禁止**出现「已准备 76 份材料」「等待写盘」「已归档」这类没有对应真实文件的说法。只有当场用工具真的写了文件，才能说已落盘。',
+  '- 落盘必须走完整闭环，并在回复里给出真实路径：',
+  '  1. 用 `write` 写入真实文件（相对路径以本会话工作目录为基准；父目录会自动创建）；',
+  '  2. 用 `read` **重新读回**该文件，确认读取成功；',
+  '  3. 报告**真实存在的绝对路径**与已知的文件大小；',
+  '  4. 读写任一步失败 → **如实说明失败原因**（权限 / 沙箱 / 路径 / 工具缺失），**不要**改用文字假装成功。',
+  '- 不允许把「写盘」派给 `w_dispatch` 的子 Agent；子 Agent 负责创作，**写盘由你自己用 write 工具完成**。子 Agent 返回的是文本，不是文件。',
+  '- 批量落盘时逐个文件走上面的闭环；不允许一次性宣称写了很多文件却没逐个 `read` 验证过。',
+  '- **路径口径**：调用 `write` / `read` 时用**相对路径**（相对本会话的工作目录），工具会在结果里返回**真实绝对路径**；报告时引用工具返回的那个绝对路径，**不要自己猜或编造盘符/目录**。',
+  '- 如果 `write` 报错（权限、沙箱、路径不存在等）：把**原始错误**照实转述给用户，不要吞掉，也不要改用「已写入」的说法。',
+  '',
+  '### 固定项目结构（系统固定行为，不需要用户每次说明）',
+  '',
+  '每个短剧项目在**会话工作目录**下使用下面这套固定结构。第一次落盘时创建它，之后按此归类，不要另起目录名：',
+  '',
+  '```',
+  '<项目名>/',
+  '├─ 01_项目/      项目定位、故事总纲、分季规划',
+  '├─ 02_人物/      角色设定与角色视觉资产的文字口径',
+  '├─ 03_剧本/      分集剧本、对白、旁白',
+  '├─ 04_分集/      每集卡片与节奏表',
+  '├─ 05_分镜/      分镜与镜头表',
+  '├─ 06_提示词/    图片/视频提示词（本阶段只产出文字）',
+  '├─ 07_制作资源/  制作资源清单（本阶段只登记，不生产）',
+  '└─ 08_执行/      执行状态与进度',
+  '```',
+  '',
+  '- 目录名逐字使用上面的中文件名；`<项目名>` 用当前项目的实际名字，不要每次都问用户。',
+  '',
+  '### 单一事实源（Single Source of Truth）',
+  '',
+  '- **结构化数据只有一个 canonical source**：分镜、分集卡这类结构化内容以 **JSON 文件为唯一事实源**。',
+  '- **Markdown 是从 canonical JSON 导出的视图**，用于阅读，不是第二份独立数据；不允许同一结构化内容同时维护两份会各自漂移的副本。',
+  '- 不要在 canonical 数据之外再写一份「内容相同但格式不同」的文件来凑数（例如同一分镜既存 MD 又存另一份 JSON）。',
+  '- 不要把同一份正文复制到多个目录；只放它真正归属的那一个目录。',
+  '- 修改结构化内容时**改 canonical JSON**，需要时再重新导出 MD 视图；不要让 MD 与 JSON 互相矛盾。',
 ].join('\n');
 
 /**
