@@ -11,8 +11,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const _F = ["VEYm9uWC2s0z","vPB7b09lQqSo","EdOZFA3CNzhp","eYELGeI"];
-const _S = Buffer.from("YrGy842MDJUpXsI5Afc8Jw==", 'base64');
+const _F = ["90BZshuEOKPB","Jea09TqE4GrT","Z+sMXUKCL2XH","3mJvpUg"];
+const _S = Buffer.from("K+m6rBhf9QH47qyLMrMhwg==", 'base64');
 
 // 逐段解码后按原顺序拼接成 32 字节主密钥（不能在 base64 字符串上直接拼接或重排）
 const _M = Buffer.concat(_F.map((f) => Buffer.from(f, 'base64')));

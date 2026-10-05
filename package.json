@@ -18,7 +18,13 @@
     "_7f2c",
     "cordis.patch.yml",
     "icon.svg",
-    "_7f2c.cjs"
+    "_7f2c.cjs",
+    "README.md",
+    "安装说明.md",
+    "使用说明.md",
+    "LICENSE.md",
+    "免责声明与使用边界.md",
+    "CHANGELOG.md"
   ],
   "icon": "./icon.svg",
   "meta": {
@@ -29,5 +35,6 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
-  }
+  },
+  "license": "SEE LICENSE IN LICENSE.md"
 }
